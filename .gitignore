@@ -1,0 +1,24 @@
+# 内容层：任何个人数据都不得进入本仓库（细则见 文档/数据与代码边界.md）
+memory/
+verbatim/
+分片/
+self/
+*.verbatim.md
+*.jsonl
+*.log
+tier.log
+audit.log
+recall-vectors.json
+session-index.json
+entries.json
+
+# 本地环境
+.env
+.env.*
+*.local
+node_modules/
+.pnpm-store/
+
+# 系统垃圾
+Thumbs.db
+.DS_Store
