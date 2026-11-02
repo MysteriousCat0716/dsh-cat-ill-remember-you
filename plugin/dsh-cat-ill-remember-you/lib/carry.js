@@ -88,14 +88,16 @@ export function renderTailCarry(tail, maxChars = LAST_SESSION_MAX_CHARS) {
   const limit = Math.max(120, maxChars - head.length - 1);
   const picked = [];
   let size = 0;
+  const perLine = Math.max(160, Math.min(400, Math.floor(limit / 4)));
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const entry = messages[index];
     const text = String(entry?.text ?? '').replace(/\s+/g, ' ').trim();
     if (text === '') continue;
     const line = `- ${entry.role === 'user' ? '他说' : '我说'}: ${text}`;
-    if (picked.length > 0 && size + line.length + 1 > limit) break;
-    picked.push(clipText(line, limit));
-    size += line.length + 1;
+    const clipped = clipText(line, perLine);
+    if (picked.length > 0 && size + clipped.length + 1 > limit) break;
+    picked.push(clipped);
+    size += clipped.length + 1;
   }
   picked.reverse();
   const finalHead = picked.length === messages.length ? head : headFor(picked.length);
