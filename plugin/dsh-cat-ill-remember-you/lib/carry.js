@@ -1,16 +1,16 @@
 /**
  * M5 · 跨会话接续
  *
- * 新会话第一轮，把「同 workspace 的上一个会话结尾」接进来。
- * 优先取上一个会话的**最后几条原文**（dsh 自己落盘的 session.v4.jsonl.zstd，
- * append-only，被替换掉的原文也在），原文读不到时才退回 shadow_v2 里
- * 真替换过（applied=1）的缓存摘要——摘要永远是退路，不是正路。
+ * 每轮把「同 workspace 里其他活跃会话的结尾」接进来，不再只接新会话第一轮、
+ * 也不只接最近那一个——快速在几个会话间切换时，每个来源各自更新、各自去重。
+ * 优先读 turns 表（已过滤注入与工具），读不到再退回会话文件原文，
+ * 最后才用 shadow_v2 里真替换过的摘要缓存。
  *
  * 三条边界：
  *   1. 只认同 cwd；cwd 为空的历史行不参与，宁可接不上也不串项目。
  *   2. 不取当前会话自己（文件 mtime 可能最新）。
- *   3. 一个会话只注入一次：判据是**会话历史**里有没有 assistant 回复，
- *      不是 pre-step 的 messages——那个只是本轮 claim 到的新消息。
+ *   3. 同一来源没更新就不重复注：判据是来源会话最新一条的 seq，记在
+ *      `carry_log` 里，跨重启成立。
  */
 
 import { recentSessionOriginals } from './originals.js';
@@ -194,12 +194,84 @@ export function rememberCarry(db, sid, fromSid, fromSeq) {
   }
 }
 
+export const MAX_CARRY_SESSIONS = 4;
+
+/**
+ * 其他会话各自最近几条「真对话」。走 turns 表（SQLite，已经过滤注入与工具），
+ * 不再每轮解压几个会话文件——快速在多个会话间切换时，只接一个会被别的会话顶掉。
+ *
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {{sid?:string, limit?:number, maxSessions?:number}} options
+ * @returns {Array<{sid:string, mtime:number, messages:Array<{seq:number,role:string,text:string}>}>}
+ */
+export function recentTurnsBySession(db, { sid, limit = 6, maxSessions = MAX_CARRY_SESSIONS } = {}) {
+  if (!db) return [];
+  try {
+    const rows = db
+      .prepare(
+        `SELECT sid, seq, role, text, t FROM (
+           SELECT sid, seq, role, text, t,
+                  ROW_NUMBER() OVER (PARTITION BY sid ORDER BY seq DESC) AS rn
+           FROM turns WHERE sid != ? AND length(text) > 0
+         ) WHERE rn <= ? ORDER BY sid, seq`,
+      )
+      .all(String(sid ?? ''), Math.max(1, limit));
+    const out = [];
+    let current = null;
+    for (const row of rows) {
+      if (!current || current.sid !== row.sid) {
+        current = { sid: row.sid, mtime: 0, messages: [] };
+        out.push(current);
+      }
+      current.messages.push({ seq: Number(row.seq), role: row.role, text: String(row.text) });
+      current.mtime = Math.max(current.mtime, Number(row.t) || 0);
+    }
+    out.sort((a, b) => b.mtime - a.mtime);
+    return out.slice(0, Math.max(1, maxSessions));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 把多个会话的结尾拼成一块。每个会话一个小标题，只带最后几条。
+ * @param {Array<{sid:string, mtime:number, messages:Array<{role:string,text:string}>}>} tails
+ * @param {number} maxChars
+ */
+export function renderMultiCarry(tails, maxChars = LAST_SESSION_MAX_CHARS) {
+  const list = Array.isArray(tails)
+    ? tails.filter((tail) => Array.isArray(tail?.messages) && tail.messages.length > 0)
+    : [];
+  if (list.length === 0) return '';
+  const head =
+    `${LAST_SESSION_MARK} 其他会话的最后几条原文（共 ${list.length} 个会话，不是当前这段对话）。` +
+    '原文在本地文件里，要查用 read / 取回。';
+  const budget = Math.max(300, maxChars - head.length - 1);
+  const perSession = Math.max(160, Math.floor(budget / list.length) - 40);
+  const parts = [head];
+  for (const tail of list) {
+    const when = stamp(tail.mtime);
+    const messages = tail.messages.slice(-6);
+    const perLine = Math.max(80, Math.min(300, Math.floor(perSession / Math.max(1, messages.length))));
+    const lines = [];
+    for (const entry of messages) {
+      const text = String(entry?.text ?? '').replace(/\s+/g, ' ').trim();
+      if (text === '') continue;
+      lines.push(`- ${entry.role === 'user' ? '他说' : '我说'}: ${clipText(text, perLine)}`);
+    }
+    if (lines.length === 0) continue;
+    const title = `### 会话 ${String(tail.sid ?? '').slice(-6)}${when ? `（${when}）` : ''}`;
+    parts.push(`${title}\n${lines.join('\n')}`);
+  }
+  return clipText(parts.join('\n'), maxChars);
+}
+
 /**
  * 接线用的纯函数：该不该注入、注入什么。
  *
- * 2026-11-03 起是「每轮都看」：不再限新会话第一轮、不再只注一次。
- * 判据是来源会话有没有比自己上次接过的更新——有就注入那一轮，
- * 没更新就安静返回 null。这样两个会话交替说话时能互相接上。
+ * 2026-11-03 起是「每轮都看、所有会话都看」：不再限新会话第一轮，
+ * 也不只接最近那一个会话——快速在几个会话间切换时，每个会话各自更新。
+ * 判据是来源会话有没有比自己上次接过的更新，有就带上那一轮。
  *
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {{cwd?:string, sid?:string, session?:object, messages?:Array, maxChars?:number, sessionsRoot?:string}} options
@@ -212,7 +284,23 @@ export function planCarry(
   // 同一轮重放时兜底：本轮消息里已经有标记。
   if (hasCarry(messages)) return null;
   if (typeof cwd !== 'string' || cwd.trim() === '') return null;
-  // 正路：别的会话的最后几条原文，按它最新一条的 seq 去重。
+
+  // 正路：turns 表里所有其他会话的最近几条，各会话独立去重。
+  const tails = [];
+  for (const tail of recentTurnsBySession(db, { sid })) {
+    const lastSeq = Number(tail.messages[tail.messages.length - 1]?.seq) || 0;
+    if (lastSeq <= lastCarry(db, sid, tail.sid)) continue;
+    tails.push(tail);
+  }
+  if (tails.length > 0) {
+    for (const tail of tails) {
+      const lastSeq = Number(tail.messages[tail.messages.length - 1]?.seq) || 0;
+      rememberCarry(db, sid, tail.sid, lastSeq);
+    }
+    return renderMultiCarry(tails, maxChars);
+  }
+
+  // 退路一：原文文件（turns 还没写入、或换了机器）。
   let tail = null;
   try {
     tail = recentSessionOriginals({ cwd, excludeSid: sid, limit: 6, sessionsRoot });
@@ -225,7 +313,7 @@ export function planCarry(
     rememberCarry(db, sid, tail.sid, lastSeq);
     return renderTailCarry(tail, maxChars);
   }
-  // 退路：原文文件读不到（旧会话已清理、盘上换过位置）时才用摘要缓存。
+  // 退路二：真替换缓存摘要。
   const row = lastSessionCache(db, { cwd, sid, maxChars });
   if (!row) return null;
   if (lastCarry(db, sid, row.sid) >= row.t) return null;
