@@ -1,5 +1,5 @@
 {
-  "name": "dsh-cat-illrememberyou",
+  "name": "dsh-cat-ill-remember-you",
   "version": "0.1.0",
   "description": "Memory core: append-only dialogue turns in SQLite, distilled memories with retrieval summaries, and structural + vector recall gated by a written reason.",
   "license": "MIT",

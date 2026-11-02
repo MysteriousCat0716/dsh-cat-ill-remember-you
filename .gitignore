@@ -18,6 +18,7 @@ entries.json
 *.local
 node_modules/
 .pnpm-store/
+_backups/
 
 # 系统垃圾
 Thumbs.db

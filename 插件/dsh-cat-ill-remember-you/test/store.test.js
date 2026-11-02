@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { openStore } from '../lib/db.js';
 
 test('openStore refuses an empty or foreign file instead of re-initializing', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'illrememberyou-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ill-remember-you-'));
   try {
     const empty = path.join(dir, 'empty.db');
     fs.writeFileSync(empty, '');
@@ -22,7 +22,7 @@ test('openStore refuses an empty or foreign file instead of re-initializing', ()
     const halfDb = new DatabaseSync(half);
     halfDb.exec('CREATE TABLE turns (id INTEGER PRIMARY KEY)');
     halfDb.close();
-    assert.throws(() => openStore(half), /not an illrememberyou store/);
+    assert.throws(() => openStore(half), /not an ill-remember-you store/);
 
     const fresh = path.join(dir, 'fresh.db');
     const db = openStore(fresh);

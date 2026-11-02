@@ -10,7 +10,7 @@ import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { forgetSweep } from './forget.js';
 
-export const name = 'dsh-cat-illrememberyou';
+export const name = 'dsh-cat-ill-remember-you';
 
 export const inject = [];
 
@@ -53,7 +53,7 @@ function recentTexts(messages, limit = 6) {
   return out;
 }
 
-const LOG_FILE = path.join(os.homedir(), '.dsh', 'cache', 'illrememberyou.log');
+const LOG_FILE = path.join(os.homedir(), '.dsh', 'cache', 'ill-remember-you.log');
 
 function log(line) {
   try {
@@ -250,5 +250,5 @@ export function apply(ctx) {
       /* already closed */
     }
     store = undefined;
-  }, 'dsh-cat-illrememberyou: idle refine + sqlite store');
+  }, 'dsh-cat-ill-remember-you: idle refine + sqlite store');
 }

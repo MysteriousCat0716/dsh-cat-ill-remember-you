@@ -136,7 +136,7 @@ export function openStore(file = DEFAULT_DB_FILE) {
           "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('turns', 'memories')",
         )
         .get();
-      if (Number(row?.n ?? 0) < 2) throw new Error(`not an illrememberyou store: ${file}`);
+      if (Number(row?.n ?? 0) < 2) throw new Error(`not an ill-remember-you store: ${file}`);
     } finally {
       db.close();
     }

@@ -89,7 +89,7 @@ test('anchorsOf: slash chat is not a path', () => {
 });
 
 test('entitiesOf: names and project nouns', () => {
-  const names = entitiesOf('猫让岸把 dsh-cat-illrememberyou 接进 Ollama');
+  const names = entitiesOf('猫让岸把 dsh-cat-ill-remember-you 接进 Ollama');
   assert.ok(names.includes('猫'));
   assert.ok(names.includes('岸'));
   assert.ok(names.some((n) => n.startsWith('dsh-')));

@@ -1,4 +1,6 @@
-# dsh-cat-illrememberyou
+# I'll Remember You
+
+包名 `dsh-cat-ill-remember-you`。
 
 记忆核心的 DSH 插件：把对话原文落进本地 SQLite，空闲时提炼成信息点，每轮开始前三级取回并注入。
 
@@ -18,7 +20,7 @@
 
 ## 装进 profile
 
-依赖与 `dsh.profile.bundles` 里加 `dsh-cat-illrememberyou`（link 到本目录），`pnpm install`，重启 dsh。
+依赖与 `dsh.profile.bundles` 里加 `dsh-cat-ill-remember-you`（link 到本目录），`pnpm install`，重启 dsh。
 
 ## 跑测试
 

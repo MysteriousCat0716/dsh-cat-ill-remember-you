@@ -44,8 +44,8 @@ test('mergeFragments: middle fragment joins the previous segment', () => {
 });
 
 test('matchableSegments: carries anchors per segment', () => {
-  const segments = matchableSegments('先看 产出/插件/foo.js。再看 记忆核心/插件/dsh-cat-illrememberyou/README.md。');
+  const segments = matchableSegments('先看 产出/插件/foo.js。再看 记忆核心/插件/dsh-cat-ill-remember-you/README.md。');
   assert.equal(segments.length, 2);
   assert.ok(segments[0].anchors.includes('产出/插件/foo.js'));
-  assert.ok(segments[1].anchors.includes('记忆核心/插件/dsh-cat-illrememberyou/README.md'));
+  assert.ok(segments[1].anchors.includes('记忆核心/插件/dsh-cat-ill-remember-you/README.md'));
 });
