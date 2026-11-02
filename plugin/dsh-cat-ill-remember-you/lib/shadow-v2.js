@@ -1,9 +1,9 @@
 /**
  * M3.5 · 替换模板影子（只记账，不改历史）
  *
- * 每轮 assistant/message 之后，从 session.surface 取模型可见消息：最近 KEEP
- * 条保留原文，更早的窗口压成一段替换文本，写进 shadow_v2。只评估这段文本够
- * 不够用，不 append surfaceOp.replace —— 真替换等账本稳了再开。
+ * 每轮 assistant/message 之后，从 session.surface 取模型可见消息：最近若干条
+ * 保留原文，更早的窗口压成一段替换文本，写进 shadow_v2。
+ * 真替换由白名单文件控制；替换文本是接续用的缓存，变长变短都换。
  *
  * 两层判据：
  *   1. 守恒：被换内容里的锚点/实体，替换文本里还剩多少（lostRatio）。
@@ -20,10 +20,15 @@ import path from 'node:path';
 
 export const DEFAULT_KEEP = 10;
 export const DEFAULT_WINDOW = 40;
-export const MAX_REPLACE_CHARS = 600;
-// 收益判据只有一条：换完整个上下文变短就换，变长就不换。1.0 = 净变短即可。
-// 不用 0.7 那种「必须省三成」的固定比例——它在小窗口上会把本来该换的挡掉。
-export const REPLACE_GAIN = 1.0;
+// 保留区不再是固定 10 条：短会话也换，长会话多留。至少留 4 条原文，最多 10 条。
+export const MIN_KEEP = 4;
+export const KEEP_RATIO = 0.4;
+// 少于这个条数不跑：没有可换的内容。
+export const MIN_ENTRIES = 4;
+// 替换文本是缓存不是压缩：600 字上限放开到 1500，变大可以理解。
+export const MAX_REPLACE_CHARS = 1500;
+// 同一会话两次真替换之间的冷却。每轮都改前缀会让缓存每轮失效。
+export const REPLACE_COOLDOWN_MS = 3 * 60 * 1000;
 
 /** 读整数环境变量；空值或非法值回落到默认。 */
 function envInt(name, fallback) {
@@ -329,18 +334,27 @@ export function applyReplacement(session, replaced, text, sid) {
  * 一轮结束时调用：算替换文本 + 评估 + 落库。只记账。
  * @returns {object|null}
  */
+/** 保留区条数：显式传 > 环境变量 > 按总量 40% 动态（至少 4、至多 10 条）。 */
+function resolveKeep(total, explicit) {
+  if (explicit != null) return Math.max(1, Math.floor(Number(explicit) || 0));
+  const env = envInt('DSH_MEMORY_CORE_KEEP', 0);
+  if (env > 0) return env;
+  return Math.max(MIN_KEEP, Math.min(DEFAULT_KEEP, Math.round(total * KEEP_RATIO)));
+}
+
 export function planShadowV2(
   session,
   db,
   {
-    keep = envInt('DSH_MEMORY_CORE_KEEP', DEFAULT_KEEP),
+    keep = null,
     window = envInt('DSH_MEMORY_CORE_SHADOW_WINDOW', DEFAULT_WINDOW),
     now = Date.now(),
   } = {},
 ) {
   const entries = surfaceMessages(session);
-  if (entries.length <= keep) return null;
-  const { replaced: older, kept } = splitKeep(entries, keep);
+  if (entries.length <= MIN_ENTRIES) return null;
+  const keepCount = resolveKeep(entries.length, keep);
+  const { replaced: older, kept } = splitKeep(entries, keepCount);
   const cap = Math.max(1, Math.floor(Number(window) || DEFAULT_WINDOW));
   const replaced = older.slice(-cap);
   if (replaced.length === 0) return null;
@@ -355,6 +369,11 @@ export function planShadowV2(
   const text = renderReplacement(replaced);
   const assessment = assessReplacement({ replaced, kept, text });
   const charsBefore = replaced.reduce((total, entry) => total + entry.text.length, 0);
+  // 冷却：刚换过就只记账，别每轮都改前缀。
+  const recent = db
+    .prepare('SELECT t FROM shadow_v2 WHERE sid = ? AND applied = 1 ORDER BY id DESC LIMIT 1')
+    .get(sid);
+  const cooledDown = !recent || now - recent.t >= REPLACE_COOLDOWN_MS;
   const row = {
     sid,
     turn: 0,
@@ -375,10 +394,9 @@ export function planShadowV2(
   // 重入 append 会被拒绝。推到微任务，等 appending 标志落下再写。
   queueMicrotask(() => {
     try {
-      // 收益门槛：替换文本要比原文明显短才动手。固定头（关键词/约定）在短对话
-      // 上会把 88 字撑成 149 字，换完反而更长，这种只记账不真换。
-      const worthIt = text.length < charsBefore * REPLACE_GAIN;
-      if (worthIt && applyReplacement(session, replaced, text, sid)) {
+      // 判据：换完变长变短都换——替换文本是接续用的缓存，不是压缩。
+      // 只跳过冷却期内的重复请求。
+      if (cooledDown && applyReplacement(session, replaced, text, sid)) {
         db.prepare('UPDATE shadow_v2 SET applied = 1 WHERE id = ?').run(Number(info.lastInsertRowid));
       }
     } catch {

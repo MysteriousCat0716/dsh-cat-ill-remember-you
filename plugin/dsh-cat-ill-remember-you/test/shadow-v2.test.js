@@ -109,10 +109,21 @@ test('assessReplacement: 锚点没进替换文本 → lostRatio 高、dangling �
   assert.equal(assessment.dangling[0].seq, 3);
 });
 
-test('planShadowV2: 消息不够 keep 条时不记账', () => {
+test('planShadowV2: 消息少于 4 条时不记账', () => {
   const db = openStore(':memory:');
-  const session = fakeSession(textEntries('短', 5));
+  const session = fakeSession(textEntries('短', 3));
   assert.equal(planShadowV2(session, db), null);
+  db.close();
+});
+
+test('planShadowV2: 短会话（6 条消息）也记账', () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('短句', 6));
+  const plan = planShadowV2(session, db, { now: 1 });
+  assert.ok(plan);
+  // 6 条 × 0.4 = 2.4 → 取 MIN_KEEP 4
+  assert.equal(plan.kept, 4);
+  assert.ok(plan.rangeEnd >= plan.rangeStart);
   db.close();
 });
 
@@ -176,7 +187,7 @@ test('planShadowV2: keep 可由 DSH_MEMORY_CORE_KEEP 覆盖', () => {
   }
 });
 
-test('planShadowV2: 环境变量非法时回落到默认 keep', () => {
+test('planShadowV2: 环境变量非法时回落到动态 keep', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 20), 'sid-env-bad');
   const previous = process.env.DSH_MEMORY_CORE_KEEP;
@@ -184,7 +195,8 @@ test('planShadowV2: 环境变量非法时回落到默认 keep', () => {
   try {
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan);
-    assert.equal(plan.kept, 10);
+    // 20 条 × 0.4 = 8，落在 [MIN_KEEP, DEFAULT_KEEP] 之间
+    assert.equal(plan.kept, 8);
   } finally {
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_KEEP;
     else process.env.DSH_MEMORY_CORE_KEEP = previous;
@@ -257,7 +269,7 @@ test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', as
   }
 });
 
-test('planShadowV2: 收益不够（替换文本不比原文明显短）时不真换', async () => {
+test('planShadowV2: 替换文本变大也真换（它是缓存不是压缩）', async () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 14), 'sid-replace');
   const previous = process.env.DSH_MEMORY_CORE_REPLACE;
@@ -269,9 +281,9 @@ test('planShadowV2: 收益不够（替换文本不比原文明显短）时不真
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
     assert.ok(plan);
     await tick();
-    assert.equal(session.appended.length, 0);
+    assert.equal(session.appended.length, 1);
     const row = db.prepare('SELECT applied FROM shadow_v2 ORDER BY id DESC LIMIT 1').get();
-    assert.equal(Number(row.applied), 0);
+    assert.equal(Number(row.applied), 1);
   } finally {
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;
     else process.env.DSH_MEMORY_CORE_REPLACE = previous;
