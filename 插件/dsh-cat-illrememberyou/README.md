@@ -1,26 +1,24 @@
 # dsh-cat-illrememberyou
 
-记忆核心插件。M0 把对话原文按 turn 落进本地 SQLite；M1 在空闲时用规则把原始轮次提炼成 `memories` 候选。
+记忆核心的 DSH 插件：把对话原文落进本地 SQLite，空闲时提炼成信息点，每轮开始前三级取回并注入。
+
+设计原则与整体架构见仓库根 [README](../../README.md)。
 
 ## 现在有什么
 
-- `lib/db.js` — `node:sqlite` 打开/建库（默认 `~/.dsh/memory/core.db`），七张表的 schema：
-  `turns`（原文，唯一键 `sid+seq+role`）、`memories`（提炼后的记忆）、`entities`、`embeddings`、
-  `runs`（提炼/建向量的执行记录）、`recall_log`（每次取回与理由）、`forget_log`（只降级不删行）。
-- `lib/ingest.js` — 从 `session/event` 的 `user/message` / `assistant/message` 提取 `text` 块写进 `turns`；
-  真人输入按 `message.source.kind === 'user'` 判断，运行时上下文（kind=`runtime-context` 等）直接丢弃；
-  无 `source` 的旧事件回落到 `[记忆提示]` 前缀黑名单；跳过 thinking / tool_call / 图片块；按 `sid+seq+role` 幂等。
-- `lib/extract.js` — M1 规则提炼（本机没有生成模型，先规则先行）：
-  `groupTurns` 按「每个 user 一条 + 其后的 assistant」分块；`classify` 分 decision / preference / fact；
-  `anchorsOf` 抓路径/文件名/`mNNNNN`；`entitiesOf` 抓专名；`refine` 写 `memories` 并标记 turns 已消费。
-  之后接模型时只换 `refine` 内部，接口不变。
-- `lib/index.js` — 挂 `session/event` 入库；空闲 5 分钟（`DSH_MEMORY_CORE_IDLE_MS`）且有待消费 turns 时跑一次提炼（每次最多 40 条）；
-  每次事件前探测 store，发现被关闭就重开（自愈）；异常写 `~/.dsh/cache/illrememberyou.log`，插件坏掉不连累宿主。
+- **M0 原文入库**：`session/event` 的 `user/message` / `assistant/message` 写进 `turns`；按 `(sid, seq, role)` 幂等；只取 text 块；运行时上下文、记忆提示、子代理委派等机器串挡在门外。
+- **M1 规则提炼**：空闲 5 分钟后把未消费的 turns 分成「user + 其后 assistant」的块，按判断/偏好/事实三类提炼成 `memories`，抽锚点与实体。接模型时只换 `refine()` 内部，接口不变。
+- **M2 三级取回**：L1 最近 3 条 / L2 memories / L3 turns，闸门要求每条写出 why，注入 1–2 条、≤600 字，落 `recall_log`。
+- **M3 影子**：每轮算「如果替换会删掉什么、补上什么」，只写 `shadow_log`，不动真实上下文。
+- **M4 遗忘**：每日一次，按取回/验证时间降 tier，只标不删，落 `forget_log`。
 
-## 还没做（M2–M3）
+## 数据
 
-- M2 取回：结构过滤 → 向量补充 → 去重 → 闸门写 `why` → 注入；对应 `recall_log`。
-- M3 迁移：把现有分片条目和旧会话文件导进 `turns` / `memories`。
+默认 `~/.dsh/memory/core.db`，`DSH_MEMORY_CORE_DB` 可覆盖。
+
+## 装进 profile
+
+依赖与 `dsh.profile.bundles` 里加 `dsh-cat-illrememberyou`（link 到本目录），`pnpm install`，重启 dsh。
 
 ## 跑测试
 
@@ -28,7 +26,18 @@
 node --test test/
 ```
 
-## 装进 profile
+61 条，全部用内存库（`':memory:'`），不碰真实数据。
 
-依赖与 `dsh.profile.bundles` 里加 `dsh-cat-illrememberyou`（link 到本目录），`pnpm install`，重启 dsh。
-数据库路径可用 `DSH_MEMORY_CORE_DB` 覆盖（测试用）。
+## 环境变量
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `DSH_MEMORY_CORE_DB` | `~/.dsh/memory/core.db` | 数据库路径 |
+| `DSH_MEMORY_CORE_IDLE_MS` | `300000` | 空闲多久后开始提炼 |
+| `DSH_MEMORY_CORE_TICK_MS` | `60000` | 空闲检查间隔 |
+
+## 已知缺口
+
+- `embeddings` 还是 0 行，L3 只靠锚点/实体/关键词，纯语义指代（「就那个讲压缩的」）可能捞不回。
+- 影子样本不足 50 轮，替换没开。
+- 提炼是规则版，摘要质量一般；接模型只改 `refine()` 内部。
