@@ -97,6 +97,22 @@ CREATE TABLE IF NOT EXISTS forget_log (
   tier_before TEXT    NOT NULL,
   tier_after  TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS shadow_v2 (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  sid          TEXT    NOT NULL,
+  turn         INTEGER NOT NULL DEFAULT 0,
+  t            INTEGER NOT NULL,
+  range_start  INTEGER NOT NULL,
+  range_end    INTEGER NOT NULL,
+  seqs         TEXT    NOT NULL,
+  text         TEXT    NOT NULL,
+  chars_before INTEGER NOT NULL,
+  chars_after  INTEGER NOT NULL,
+  kept         INTEGER NOT NULL DEFAULT 0,
+  lost_ratio   REAL    NOT NULL DEFAULT 0,
+  dangling     INTEGER NOT NULL DEFAULT 0
+);
 `;
 
 /**

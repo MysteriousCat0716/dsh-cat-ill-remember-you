@@ -1,7 +1,8 @@
 import { insertTurn } from './db.js';
 
 /** Fallback filter for old events that carry no `source` field. */
-const INJECT_RE = /^\s*(\[记忆\]|\[记忆提示\]|\[MEMORY HINT\]|\[inject-guard\]|\[记忆注入\]|\[记忆召回\]|MNEMON RUNTIME MEMORY SNAPSHOT|\[Compressed conversation section\]|\[dsh-mnemon|<system-reminder>|<runtime-memory-file)/;
+export const INJECT_RE =
+  /^\s*(\[记忆\]|\[记忆提示\]|\[MEMORY HINT\]|\[inject-guard\]|\[记忆注入\]|\[记忆召回\]|MNEMON RUNTIME MEMORY SNAPSHOT|Current runtime context|\[Compressed conversation section\]|\[dsh-mnemon|<system-reminder>|<runtime-memory-file)/;
 
 /** A single turn is capped so one pasted log cannot bloat the store. */
 const MAX_TURN_CHARS = 200_000;

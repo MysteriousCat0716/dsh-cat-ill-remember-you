@@ -8,6 +8,7 @@ import { refine } from './extract.js';
 import { ingestEvent, textOf } from './ingest.js';
 import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
+import { planShadowV2 } from './shadow-v2.js';
 import { forgetSweep } from './forget.js';
 import { embedPending } from './embed.js';
 
@@ -129,6 +130,13 @@ export function apply(ctx) {
       const inserted = ingestEvent(db, session, event);
       if (event?.type === 'user/message' || event?.type === 'assistant/message') {
         log(`${event.type} seq=${event.seq} inserted=${inserted}`);
+      }
+      if (event?.type === 'assistant/message') {
+        try {
+          planShadowV2(session, db);
+        } catch (error) {
+          log(`shadow-v2 failed: ${error?.message ?? error}`);
+        }
       }
     } catch (error) {
       log(`ingest failed ${event?.type ?? '?'}#${event?.seq ?? '?'}: ${error?.message ?? error}`);
