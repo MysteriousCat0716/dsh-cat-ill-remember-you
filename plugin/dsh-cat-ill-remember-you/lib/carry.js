@@ -8,9 +8,11 @@
  * 三条边界：
  *   1. 只认同 cwd；cwd 为空的历史行不参与，宁可接不上也不串项目。
  *   2. 不取当前会话自己的缓存。
- *   3. 一个会话只注入一次：messages 里已经有标记就跳过（跨重启也成立，
- *      因为标记就在会话历史里）。
+ *   3. 一个会话只注入一次：判据是**会话历史**里有没有 assistant 回复，
+ *      不是 pre-step 的 messages——那个只是本轮 claim 到的新消息。
  */
+
+import { surfaceMessages } from './shadow-v2.js';
 
 export const LAST_SESSION_MARK = '[上次会话结尾]';
 export const LAST_SESSION_MAX_CHARS = 800;
@@ -70,40 +72,75 @@ export function renderCarry(row) {
 /** 这条会话历史里是否已经注入过接续缓存。 */
 export function hasCarry(messages) {
   if (!Array.isArray(messages)) return false;
-  return messages.some((message) => {
-    const content = message?.content;
-    const text =
-      typeof content === 'string'
-        ? content
-        : Array.isArray(content)
-          ? content.map((block) => block?.text ?? '').join('\n')
-          : '';
-    return text.trimStart().startsWith(LAST_SESSION_MARK);
-  });
+  return messages.some((message) => hasCarryText(message));
+}
+
+/** 单条消息是否带接续标记。 */
+export function hasCarryText(message) {
+  const content = message?.content;
+  const text =
+    typeof content === 'string'
+      ? content
+      : Array.isArray(content)
+        ? content.map((block) => block?.text ?? '').join('\n')
+        : '';
+  return text.trimStart().startsWith(LAST_SESSION_MARK);
+}
+
+/**
+ * 会话历史里是否已经出现过接续标记。
+ *
+ * surfaceMessages 会跳过 source.kind !== 'user' 的消息，而我们自己注入的
+ * 那条是 memory-core——所以要直接扫 surface.nodes。覆盖「注入后、还没回复
+ * 就重启」这种情况，否则会再注入一次。
+ */
+export function hasCarryInSurface(session) {
+  const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes : [];
+  for (const seq of nodes) {
+    if (!seq) continue;
+    try {
+      const message = session.deriveEventMessage?.(session.eventAt?.(seq));
+      if (hasCarryText(message)) return true;
+    } catch {
+      // 单个节点坏了不影响判断别的
+    }
+  }
+  return false;
 }
 
 /**
  * 会话里是否已经有过 assistant 回复。
  *
- * 这是「是不是新会话」的判据，不用 pre-step 的 turn：turn 是**进程内**轮次
- * （dsh-agent-loop/lib/index.js:943 `const turn = phase.turn + 1`），旧会话
- * 恢复后第一轮也是 1，拿它当判据会把「上个会话结尾」塞进一个聊了很久的会话。
- * 新会话第一轮不可能有 assistant 历史，这个判据跨重启也成立。
+ * 这是「是不是新会话」的判据。不能用 pre-step payload 里的 `messages`：
+ * 那是 inbox 里 claim 到的**本轮新消息**（`dsh-agent-loop/lib/index.js:909-912`
+ * `messages: claimed`），不是会话历史——拿它判 assistant 永远为假，主会话
+ * 每轮都会把「上个会话结尾」塞进去（2026-11-03 01:31 实机踩到）。
+ * 也不能用 turn：那是进程内轮次（`dsh-agent-loop/lib/index.js:943`），
+ * 旧会话恢复后第一轮也是 1。
+ *
+ * 用 surface 才看到真实历史，而且跨重启成立。
+ * @param {object} session
  */
-export function hasAssistantTurn(messages) {
-  if (!Array.isArray(messages)) return false;
-  return messages.some((message) => message?.role === 'assistant');
+export function hasAssistantTurn(session) {
+  return surfaceMessages(session).some((entry) => entry.role === 'assistant');
 }
 
 /**
  * 接线用的纯函数：该不该注入、注入什么。
  * @param {import('node:sqlite').DatabaseSync} db
- * @param {{cwd?:string, sid?:string, messages?:Array, maxChars?:number}} options
+ * @param {{cwd?:string, sid?:string, session?:object, messages?:Array, maxChars?:number}} options
  * @returns {string|null}
  */
-export function planCarry(db, { cwd, sid, messages, maxChars = LAST_SESSION_MAX_CHARS } = {}) {
+export function planCarry(
+  db,
+  { cwd, sid, session, messages = [], maxChars = LAST_SESSION_MAX_CHARS } = {},
+) {
+  // 同一轮重放时兜底：本轮消息里已经有标记。
   if (hasCarry(messages)) return null;
-  if (hasAssistantTurn(messages)) return null;
+  // 拿不到会话就不猜——宁可接不上，也不要往一个可能聊了很久的会话里塞。
+  if (!session) return null;
+  if (hasCarryInSurface(session)) return null;
+  if (hasAssistantTurn(session)) return null;
   const row = lastSessionCache(db, { cwd, sid, maxChars });
   return row ? renderCarry(row) : null;
 }

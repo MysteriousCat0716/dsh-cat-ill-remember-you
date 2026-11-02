@@ -162,12 +162,13 @@ export function apply(ctx) {
       // M5：会话第一轮接上同一个 workspace 里上一个会话的最后缓存。
       // 只认真替换过的行（applied=1），那是模型实际读过的接续文本；
       // cwd 为空的历史行不参与——宁可接不上也不串项目。
-      // 是不是「第一轮」由 carry.js 按会话历史判断：不用 turn，
+      // 是不是「第一轮」由 carry.js 看会话历史（surface 里有没有 assistant），
+      // 不看 pre-step 的 messages——那只是本轮 claim 到的消息，也不看 turn，
       // 那是进程内轮次（旧会话恢复后也从 1 开始）。
       try {
         const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sid) : undefined;
         const cwd = session?.header?.cwd;
-        const carry = planCarry(db, { cwd, sid, messages: decision.messages });
+        const carry = planCarry(db, { cwd, sid, session, messages: decision.messages });
         if (carry) {
           extra.push(hintMessage(carry));
           log(`carry chars=${carry.length} cwd=${cwd}`);

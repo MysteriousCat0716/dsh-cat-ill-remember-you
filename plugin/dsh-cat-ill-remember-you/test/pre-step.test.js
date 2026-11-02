@@ -9,7 +9,27 @@ import { recordShadowV2 } from '../lib/shadow-v2.js';
 import { apply } from '../lib/index.js';
 import { LAST_SESSION_MARK } from '../lib/carry.js';
 
-function fakeCtx(cwd) {
+/** 假会话：surface.nodes 是 seq 数组，eventAt/deriveEventMessage 按 seq 取回。 */
+function fakeSession(entries, cwd) {
+  const events = new Map(
+    entries.map(([seq, role, text, source]) => [seq, { seq, role, text, source }]),
+  );
+  return {
+    header: { cwd },
+    surface: { nodes: [0, ...entries.map(([seq]) => seq)] },
+    eventAt: (seq) => events.get(seq),
+    deriveEventMessage: (event) =>
+      event
+        ? {
+            role: event.role,
+            content: [{ type: 'text', text: event.text }],
+            ...(event.source ? { source: event.source } : {}),
+          }
+        : undefined,
+  };
+}
+
+function fakeCtx(cwd, history = []) {
   const handlers = new Map();
   const disposers = [];
   return {
@@ -23,7 +43,7 @@ function fakeCtx(cwd) {
         if (typeof dispose === 'function') disposers.push(dispose);
         return { dispose() {} };
       },
-      sessions: { get: () => ({ header: { cwd } }) },
+      sessions: { get: () => fakeSession(history, cwd) },
     },
     fire: (event, payload, next) => handlers.get(event)[0](payload, next),
     dispose: () => {
@@ -39,7 +59,7 @@ function fakeCtx(cwd) {
 }
 
 /** 准备一个带旧会话缓存的临时库，然后按真实接线跑一次 pre-step。 */
-async function runPreStep({ turn, messages, cwd = '/proj', memory = null }) {
+async function runPreStep({ turn, messages, cwd = '/proj', memory = null, history = [] }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'carry-pre-step-'));
   const file = path.join(dir, 'memory.db');
   const seed = openStore(file);
@@ -80,7 +100,7 @@ async function runPreStep({ turn, messages, cwd = '/proj', memory = null }) {
 
   const previous = process.env.DSH_MEMORY_CORE_DB;
   process.env.DSH_MEMORY_CORE_DB = file;
-  const harness = fakeCtx(cwd);
+  const harness = fakeCtx(cwd, history);
   try {
     apply(harness.ctx);
     const decision = { messages: [...messages] };
@@ -113,22 +133,26 @@ test('pre-step: 第一轮注入上一个会话的最后缓存', async () => {
   assert.equal(result.messages.filter((message) => message.source?.kind === 'user').length, 1);
 });
 
-test('pre-step: 聊过的会话不再注入（turn 从 1 开始也不算新会话）', async () => {
+test('pre-step: 聊过的会话不再注入（判据看会话历史，不看 pre-step 的 messages）', async () => {
   const { decision: result } = await runPreStep({
     turn: 1,
-    messages: [
-      userMessage('早'),
-      { role: 'assistant', content: [{ type: 'text', text: '在' }] },
-      userMessage('继续'),
+    // pre-step 的 messages 只是本轮 claim 到的新消息——这里和真实载荷一致，
+    // 只有一条 user；会话历史另放在 history 里。
+    messages: [userMessage('继续')],
+    history: [
+      [1, 'user', '早'],
+      [2, 'assistant', '在'],
+      [3, 'user', '继续'],
     ],
   });
   assert.equal(result.messages.filter((message) => message.source?.kind === 'memory-core').length, 0);
 });
 
-test('pre-step: 历史里已有标记时不重复注入', async () => {
+test('pre-step: 历史里已有标记时不重复注入（注入后未回复就重启）', async () => {
   const { decision: result } = await runPreStep({
     turn: 1,
-    messages: [userMessage('我回来了'), userMessage(`${LAST_SESSION_MARK} 上一轮已注入`)],
+    messages: [userMessage('我回来了')],
+    history: [[1, 'user', `${LAST_SESSION_MARK} 上一轮已注入`, { kind: 'memory-core' }]],
   });
   assert.equal(result.messages.filter((message) => message.source?.kind === 'memory-core').length, 0);
 });
