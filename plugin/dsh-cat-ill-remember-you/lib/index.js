@@ -152,8 +152,16 @@ export function apply(ctx) {
   // 不会被 M0 的 ingest 当成他的话再收一遍。
   ctx.on('agent/pre-step', async ({ agent, messages, signal, step, turn }, next) => {
     const decision = await next();
+    if (!decision || typeof decision !== 'object') {
+      log('pre-step: next() returned no decision, skip injection');
+      return decision;
+    }
     if (decision?.kind === 'reject' || signal?.aborted) return decision;
     if (step !== 1) return decision;
+    if (!Array.isArray(decision.messages)) {
+      log(`pre-step: decision.messages is ${typeof decision.messages}, skip injection`);
+      return decision;
+    }
     try {
       const db = currentStore();
       if (!db) return decision;

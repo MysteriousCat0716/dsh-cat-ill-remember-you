@@ -46,9 +46,11 @@ export function sessionLogFile({ sid, cwd, sessionsRoot = DEFAULT_SESSIONS_ROOT 
  */
 export function readSessionEvents(file) {
   if (typeof file !== 'string' || file.length === 0) return [];
+  // 「没有这个文件」和「文件在但读不动」是两回事：前者正常跳过，
+  // 后者要抛出去让调用方显式降级，而不是当成空会话。
+  if (!existsSync(file)) return [];
+  if (statSync(file).size > MAX_ORIGINAL_FILE_BYTES) return [];
   try {
-    if (!existsSync(file)) return [];
-    if (statSync(file).size > MAX_ORIGINAL_FILE_BYTES) return [];
     const text = zstdDecompressSync(readFileSync(file)).toString('utf8');
     const events = [];
     for (const line of text.split('\n')) {
@@ -62,7 +64,7 @@ export function readSessionEvents(file) {
     return events;
   } catch (error) {
     warn(`originals: read ${file} failed: ${error?.message ?? error}`);
-    return [];
+    throw error;
   }
 }
 
@@ -105,7 +107,12 @@ export function originalMessages(session, sessionsRoot = DEFAULT_SESSIONS_ROOT) 
     cwd: typeof session?.header?.cwd === 'string' ? session.header.cwd : '',
     sessionsRoot,
   });
-  return messagesFromEvents(readSessionEvents(file));
+  try {
+    return messagesFromEvents(readSessionEvents(file));
+  } catch {
+    // 当前会话自己的原文读不动时按「没有」处理，不影响替换流程。
+    return [];
+  }
 }
 
 /**
@@ -146,7 +153,13 @@ export function recentSessionOriginals({
   }
   files.sort((a, b) => b.mtime - a.mtime);
   for (const item of files.slice(0, Math.max(1, maxFiles))) {
-    const events = readSessionEvents(item.file);
+    let events;
+    try {
+      events = readSessionEvents(item.file);
+    } catch {
+      // 这个文件读不动，换下一个；全都不行时返回 null，由调用方决定退路。
+      continue;
+    }
     if (events.length === 0) continue;
     // 子代理的会话也是文件，但那是任务现场，不是「上一个会话」。
     const origin = events[0]?.origin;

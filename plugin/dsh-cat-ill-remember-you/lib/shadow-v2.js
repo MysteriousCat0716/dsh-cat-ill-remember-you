@@ -38,6 +38,10 @@ export const ROLL_SOFT_BUDGET = 6000;
 // 每次只动 4 条，冷却可以比「一次换一大段」短。
 export const ROLL_COOLDOWN_MS = 60 * 1000;
 
+// 同一个区间只允许一个替换在途：记账那一行要等微任务里的 append 成功才
+// 标 applied=1，这期间同区间再评估一次会重复排队。用内存锁挡住。
+const pending = new Set();
+
 /** 读整数环境变量；空值或非法值回落到默认。 */
 function envInt(name, fallback) {
   const raw = process.env[name];
@@ -445,6 +449,9 @@ export function planShadowV2(
     applied: false,
     cwd,
   };
+  const pendingKey = `${sid}:${rangeStart}:${rangeEnd}`;
+  if (pending.has(pendingKey)) return null;
+  pending.add(pendingKey);
   const info = recordShadowV2(db, row);
   // 真替换不能在 session/event 回调里同步 append：此刻宿主还在发布边界内，
   // 重入 append 会被拒绝。推到微任务，等 appending 标志落下再写。
@@ -457,6 +464,8 @@ export function planShadowV2(
       }
     } catch {
       /* 记账失败不影响会话 */
+    } finally {
+      pending.delete(pendingKey);
     }
   });
   return {

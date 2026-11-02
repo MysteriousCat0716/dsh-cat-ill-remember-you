@@ -171,7 +171,8 @@ export function hasAssistantTurn(session) {
 }
 
 /**
- * 这个会话上次从 fromSid 接到哪个位置（seq / t）。0 表示没接过。
+ * 这个会话上次从 fromSid 接到哪个位置。返回 `{seq, t}`，全 0 表示没接过。
+ * 同时看 seq 和 t：宿主压缩后 turns 不更新时 seq 可能不变而内容已经变了。
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {string} sid
  * @param {string} fromSid
@@ -179,12 +180,15 @@ export function hasAssistantTurn(session) {
 export function lastCarry(db, sid, fromSid) {
   try {
     const row = db
-      .prepare('SELECT from_seq FROM carry_log WHERE sid = ? AND from_sid = ?')
+      .prepare('SELECT from_seq, from_t FROM carry_log WHERE sid = ? AND from_sid = ?')
       .get(String(sid ?? ''), String(fromSid ?? ''));
-    return row ? Number(row.from_seq) || 0 : 0;
+    return {
+      seq: row ? Number(row.from_seq) || 0 : 0,
+      t: row ? Number(row.from_t) || 0 : 0,
+    };
   } catch (error) {
     warn(`carry: read carry_log failed: ${error?.message ?? error}`);
-    return 0;
+    return { seq: 0, t: 0 };
   }
 }
 
@@ -194,13 +198,21 @@ export function lastCarry(db, sid, fromSid) {
  * @param {string} sid
  * @param {string} fromSid
  * @param {number} fromSeq
+ * @param {number} [fromT]
  */
-export function rememberCarry(db, sid, fromSid, fromSeq) {
+export function rememberCarry(db, sid, fromSid, fromSeq, fromT = 0) {
   try {
     db.prepare(
-      `INSERT INTO carry_log (sid, from_sid, from_seq, t) VALUES (?, ?, ?, ?)
-       ON CONFLICT (sid, from_sid) DO UPDATE SET from_seq = excluded.from_seq, t = excluded.t`,
-    ).run(String(sid ?? ''), String(fromSid ?? ''), Number(fromSeq) || 0, Date.now());
+      `INSERT INTO carry_log (sid, from_sid, from_seq, from_t, t) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (sid, from_sid) DO UPDATE SET
+         from_seq = excluded.from_seq, from_t = excluded.from_t, t = excluded.t`,
+    ).run(
+      String(sid ?? ''),
+      String(fromSid ?? ''),
+      Number(fromSeq) || 0,
+      Number(fromT) || 0,
+      Date.now(),
+    );
   } catch (error) {
     // 记账失败不影响本轮注入
     warn(`carry: write carry_log failed: ${error?.message ?? error}`);
@@ -303,13 +315,14 @@ export function planCarry(
   const tails = [];
   for (const tail of recentTurnsBySession(db, { sid })) {
     const lastSeq = Number(tail.messages[tail.messages.length - 1]?.seq) || 0;
-    if (lastSeq <= lastCarry(db, sid, tail.sid)) continue;
+    const mine = lastCarry(db, sid, tail.sid);
+    if (mine.seq >= lastSeq && mine.t >= tail.mtime) continue;
     tails.push(tail);
   }
   if (tails.length > 0) {
     for (const tail of tails) {
       const lastSeq = Number(tail.messages[tail.messages.length - 1]?.seq) || 0;
-      rememberCarry(db, sid, tail.sid, lastSeq);
+      rememberCarry(db, sid, tail.sid, lastSeq, tail.mtime);
     }
     return renderMultiCarry(tails, maxChars);
   }
@@ -324,14 +337,16 @@ export function planCarry(
   }
   if (tail && tail.messages.length > 0) {
     const lastSeq = tail.messages[tail.messages.length - 1].seq;
-    if (lastCarry(db, sid, tail.sid) >= lastSeq) return null;
-    rememberCarry(db, sid, tail.sid, lastSeq);
+    const mine = lastCarry(db, sid, tail.sid);
+    if (mine.seq >= lastSeq && mine.t >= tail.mtime) return null;
+    rememberCarry(db, sid, tail.sid, lastSeq, tail.mtime);
     return renderTailCarry(tail, maxChars);
   }
   // 退路二：真替换缓存摘要。
   const row = lastSessionCache(db, { cwd, sid, maxChars });
   if (!row) return null;
-  if (lastCarry(db, sid, row.sid) >= row.t) return null;
-  rememberCarry(db, sid, row.sid, row.t);
+  const mine = lastCarry(db, sid, row.sid);
+  if (mine.t >= row.t) return null;
+  rememberCarry(db, sid, row.sid, mine.seq, row.t);
   return renderCarry(row);
 }

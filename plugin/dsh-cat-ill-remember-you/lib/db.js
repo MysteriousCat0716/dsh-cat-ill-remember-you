@@ -117,11 +117,13 @@ CREATE TABLE IF NOT EXISTS shadow_v2 (
   cwd          TEXT    NOT NULL DEFAULT ''
 );
 
--- 跨会话接续的去重账：每个会话记得「上次接过谁、接到哪个 seq」。
+-- 跨会话接续的去重账：每个会话记得「上次接过谁、接到哪个 seq / 哪个时刻」。
+-- from_t 防「seq 没变但内容变了」（宿主压缩后 turns 不更新）时被误判成已接过。
 CREATE TABLE IF NOT EXISTS carry_log (
   sid      TEXT    NOT NULL,
   from_sid TEXT    NOT NULL,
   from_seq INTEGER NOT NULL,
+  from_t   INTEGER NOT NULL DEFAULT 0,
   t        INTEGER NOT NULL,
   PRIMARY KEY (sid, from_sid)
 );
@@ -184,6 +186,7 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'shadow_v2', 'applied', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'shadow_v2', 'cwd', "TEXT NOT NULL DEFAULT ''");
+    ensureColumn(db, 'carry_log', 'from_t', 'INTEGER NOT NULL DEFAULT 0');
     return db;
   } catch (error) {
     try {
