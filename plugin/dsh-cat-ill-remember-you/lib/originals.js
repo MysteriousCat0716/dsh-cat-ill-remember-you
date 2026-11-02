@@ -49,7 +49,11 @@ export function readSessionEvents(file) {
   // 「没有这个文件」和「文件在但读不动」是两回事：前者正常跳过，
   // 后者要抛出去让调用方显式降级，而不是当成空会话。
   if (!existsSync(file)) return [];
-  if (statSync(file).size > MAX_ORIGINAL_FILE_BYTES) return [];
+  const size = statSync(file).size;
+  if (size > MAX_ORIGINAL_FILE_BYTES) {
+    warn(`originals: skip ${file} (${size} bytes > ${MAX_ORIGINAL_FILE_BYTES})`);
+    return [];
+  }
   try {
     const text = zstdDecompressSync(readFileSync(file)).toString('utf8');
     const events = [];
@@ -109,8 +113,10 @@ export function originalMessages(session, sessionsRoot = DEFAULT_SESSIONS_ROOT) 
   });
   try {
     return messagesFromEvents(readSessionEvents(file));
-  } catch {
-    // 当前会话自己的原文读不动时按「没有」处理，不影响替换流程。
+  } catch (error) {
+    // 当前会话自己的原文读不动时按「没有」处理，不影响替换流程；
+    // 但要留日志，否则「读不到」和「没有对话」在流水里分不开。
+    warn(`originals: originalMessages ${file} failed: ${error?.message ?? error}`);
     return [];
   }
 }
@@ -156,14 +162,21 @@ export function recentSessionOriginals({
     let events;
     try {
       events = readSessionEvents(item.file);
-    } catch {
+    } catch (error) {
       // 这个文件读不动，换下一个；全都不行时返回 null，由调用方决定退路。
+      warn(`originals: skip ${item.file}: ${error?.message ?? error}`);
       continue;
     }
     if (events.length === 0) continue;
     // 子代理的会话也是文件，但那是任务现场，不是「上一个会话」。
-    const origin = events[0]?.origin;
-    if (typeof origin === 'string' && origin !== 'session') continue;
+    // 主会话的目录名是 `session-*`；子会话要么带 parentSession，要么是
+    // `origin=subagent` 的无前缀 uuid。只看 origin 不够：主会话可能没有
+    // origin 字段，新版本也可能给主会话标 subagent。
+    const header = events[0] ?? {};
+    const hasParent = typeof header.parentSession === 'string' && header.parentSession.length > 0;
+    if (hasParent) continue;
+    const origin = header.origin;
+    if (origin === 'subagent' && !item.sid.startsWith('session-')) continue;
     const messages = messagesFromEvents(events);
     if (messages.length === 0) continue;
     return { sid: item.sid, mtime: item.mtime, messages: messages.slice(-Math.max(1, limit)) };

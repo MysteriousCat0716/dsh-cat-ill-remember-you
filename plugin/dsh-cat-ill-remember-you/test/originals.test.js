@@ -105,6 +105,33 @@ test('recentSessionOriginals 取最近、排除自己、跳过没有原文的会
   }
 });
 
+test('recentSessionOriginals 用 session- 前缀认主会话，跳过子代理', () => {
+  const root = tempRoot();
+  try {
+    const cwd = 'C:\\\\w';
+    // 子代理：无前缀 uuid + origin=subagent，即使有对话也不该被当成上一个会话
+    writeSession(root, 'aaaaaaaa-0000-0000-0000-000000000001', cwd, [
+      { type: 'session', seq: 0, origin: 'subagent', data: { id: 'aaaaaaaa' } },
+      userEvent(1, '子代理现场'),
+    ]);
+    // 主会话：session- 前缀。宿主也可能给主会话标 origin=subagent，不能因此漏掉
+    writeSession(root, 'session-bbbb', cwd, [
+      { type: 'session', seq: 0, origin: 'subagent', data: { id: 'session-bbbb' } },
+      userEvent(1, '主会话'),
+    ]);
+    const found = recentSessionOriginals({
+      cwd,
+      excludeSid: 'session-current',
+      sessionsRoot: root,
+    });
+    assert.ok(found);
+    assert.equal(found.sid, 'session-bbbb');
+    assert.deepEqual(found.messages.map((m) => m.text), ['主会话']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('renderTailCarry 保留最近的条目并带标记', () => {
   const text = renderTailCarry(
     {
