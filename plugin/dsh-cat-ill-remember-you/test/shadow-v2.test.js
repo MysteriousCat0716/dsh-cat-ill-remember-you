@@ -56,6 +56,9 @@ function tempSessionList(sids) {
   return { file, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
+/** 真替换推在微任务里做，断言前等它落地。 */
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+
 test('surfaceMessages: 跳过 system head，只收 user/assistant', () => {
   const session = fakeSession([
     [1, 'user', '你好'],
@@ -189,7 +192,7 @@ test('planShadowV2: 环境变量非法时回落到默认 keep', () => {
   }
 });
 
-test('planShadowV2: 默认不真替换（REPLACE 关）', () => {
+test('planShadowV2: 默认不真替换（REPLACE 关）', async () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 14), 'sid-no-replace');
   const previous = process.env.DSH_MEMORY_CORE_REPLACE;
@@ -198,6 +201,7 @@ test('planShadowV2: 默认不真替换（REPLACE 关）', () => {
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
     assert.ok(plan);
     assert.equal(plan.applied, false);
+    await tick();
     assert.equal(session.appended.length, 0);
     const row = db.prepare('SELECT applied FROM shadow_v2 ORDER BY id DESC LIMIT 1').get();
     assert.equal(Number(row.applied), 0);
@@ -208,7 +212,7 @@ test('planShadowV2: 默认不真替换（REPLACE 关）', () => {
   }
 });
 
-test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', () => {
+test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', async () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 14), 'sid-replace');
   const previous = process.env.DSH_MEMORY_CORE_REPLACE;
@@ -219,8 +223,11 @@ test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', ()
   try {
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
     assert.ok(plan);
-    assert.equal(plan.applied, true);
+    assert.equal(plan.applied, false);
+    await tick();
     assert.equal(session.appended.length, 1);
+    const row = db.prepare('SELECT applied FROM shadow_v2 ORDER BY id DESC LIMIT 1').get();
+    assert.equal(Number(row.applied), 1);
     const call = session.appended[0];
     assert.equal(call.type, 'user/message');
     assert.equal(call.options.surfaceOp.op, 'replace');
@@ -241,7 +248,7 @@ test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', ()
   }
 });
 
-test('planShadowV2: REPLACE=1 但会话不在白名单时不替换', () => {
+test('planShadowV2: REPLACE=1 但会话不在白名单时不替换', async () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 14), 'sid-other');
   const previous = process.env.DSH_MEMORY_CORE_REPLACE;
@@ -253,6 +260,7 @@ test('planShadowV2: REPLACE=1 但会话不在白名单时不替换', () => {
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
     assert.ok(plan);
     assert.equal(plan.applied, false);
+    await tick();
     assert.equal(session.appended.length, 0);
   } finally {
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;

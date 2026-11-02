@@ -237,25 +237,27 @@ export function assessReplacement({ replaced, kept, text }) {
  * @param {{sid:string,turn:number,t:number,rangeStart:number,rangeEnd:number,seqs:string,text:string,charsBefore:number,charsAfter:number,kept:number,lostRatio:number,dangling:number}} row
  */
 export function recordShadowV2(db, row) {
-  db.prepare(
-    `INSERT INTO shadow_v2
+  return db
+    .prepare(
+      `INSERT INTO shadow_v2
        (sid, turn, t, range_start, range_end, seqs, text, chars_before, chars_after, kept, lost_ratio, dangling, applied)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(
-    row.sid,
-    row.turn,
-    row.t,
-    row.rangeStart,
-    row.rangeEnd,
-    row.seqs,
-    row.text,
-    row.charsBefore,
-    row.charsAfter,
-    row.kept,
-    row.lostRatio,
-    row.dangling,
-    row.applied ? 1 : 0,
-  );
+    )
+    .run(
+      row.sid,
+      row.turn,
+      row.t,
+      row.rangeStart,
+      row.rangeEnd,
+      row.seqs,
+      row.text,
+      row.charsBefore,
+      row.charsAfter,
+      row.kept,
+      row.lostRatio,
+      row.dangling,
+      row.applied ? 1 : 0,
+    );
 }
 
 /** 旧的全局开关，保留导出只为兼容；现在开关就是白名单文件本身。 */
@@ -341,7 +343,6 @@ export function planShadowV2(
   const text = renderReplacement(replaced);
   const assessment = assessReplacement({ replaced, kept, text });
   const charsBefore = replaced.reduce((total, entry) => total + entry.text.length, 0);
-  const applied = applyReplacement(session, replaced, text, sid);
   const row = {
     sid,
     turn: 0,
@@ -355,9 +356,20 @@ export function planShadowV2(
     kept: kept.length,
     lostRatio: assessment.lostRatio,
     dangling: assessment.dangling.length,
-    applied,
+    applied: false,
   };
-  recordShadowV2(db, row);
+  const info = recordShadowV2(db, row);
+  // 真替换不能在 session/event 回调里同步 append：此刻宿主还在发布边界内，
+  // 重入 append 会被拒绝。推到微任务，等 appending 标志落下再写。
+  queueMicrotask(() => {
+    try {
+      if (applyReplacement(session, replaced, text, sid)) {
+        db.prepare('UPDATE shadow_v2 SET applied = 1 WHERE id = ?').run(Number(info.lastInsertRowid));
+      }
+    } catch {
+      /* 记账失败不影响会话 */
+    }
+  });
   return {
     ...row,
     missing: assessment.missing,
