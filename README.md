@@ -100,7 +100,7 @@ SQLite，`node:sqlite`，无原生依赖。八张表：
 
 ## 安装
 
-这是一个 DSH 插件（`插件/dsh-cat-ill-remember-you`，名字 **I'll Remember You**）。
+这是一个 DSH 插件（`plugin/dsh-cat-ill-remember-you`，名字 **I'll Remember You**）。
 
 1. 在 profile 的 `dependencies` 里加 `dsh-cat-ill-remember-you`（指向本目录），并在 `dsh.profile.bundles` 里加同一条；
 2. `pnpm install`；
@@ -111,7 +111,7 @@ SQLite，`node:sqlite`，无原生依赖。八张表：
 ## 跑测试
 
 ```bash
-cd 插件/dsh-cat-ill-remember-you
+cd plugin/dsh-cat-ill-remember-you
 node --test test/
 ```
 
