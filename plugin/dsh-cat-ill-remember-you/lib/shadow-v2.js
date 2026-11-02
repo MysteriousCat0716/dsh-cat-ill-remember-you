@@ -258,7 +258,7 @@ export function recordShadowV2(db, row) {
   );
 }
 
-/** 真替换开关，默认关。只认 '1' / 'true'。 */
+/** 旧的全局开关，保留导出只为兼容；现在开关就是白名单文件本身。 */
 export const REPLACE_FLAG = 'DSH_MEMORY_CORE_REPLACE';
 
 /** 白名单文件：每行一个 session id，`*` 表示全部。只有列在里面的会话才真替换。 */
@@ -270,10 +270,8 @@ function sessionsFile() {
 }
 
 export function replaceEnabled(sid) {
-  const raw = process.env[REPLACE_FLAG];
-  if (raw !== '1' && raw !== 'true') return false;
-  // 白名单是第二道闸：没写进文件的会话一律不换，防止误伤正在用的对话。
-  // 文件不存在也当作空名单——宁可测试跑不起来，也不悄悄全局开。
+  // 白名单文件就是开关：不存在 = 全关；存在 = 只认名单里的会话（`*` 全开）。
+  // 不用改启动命令、不用带环境变量，写一行文本就开，删掉就关。
   let lines;
   try {
     lines = fs.readFileSync(sessionsFile(), 'utf8').split(/\r?\n/);
@@ -281,6 +279,7 @@ export function replaceEnabled(sid) {
     return false;
   }
   const allowed = lines.map((line) => line.trim()).filter(Boolean);
+  if (allowed.length === 0) return false;
   if (allowed.includes('*')) return true;
   return sid != null && allowed.includes(String(sid));
 }
