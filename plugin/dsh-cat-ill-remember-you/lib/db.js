@@ -113,7 +113,8 @@ CREATE TABLE IF NOT EXISTS shadow_v2 (
   kept         INTEGER NOT NULL DEFAULT 0,
   lost_ratio   REAL    NOT NULL DEFAULT 0,
   dangling     INTEGER NOT NULL DEFAULT 0,
-  applied      INTEGER NOT NULL DEFAULT 0
+  applied      INTEGER NOT NULL DEFAULT 0,
+  cwd          TEXT    NOT NULL DEFAULT ''
 );
 `;
 
@@ -173,6 +174,7 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'memories', 'retention', "TEXT NOT NULL DEFAULT 'auto'");
     ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'shadow_v2', 'applied', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn(db, 'shadow_v2', 'cwd', "TEXT NOT NULL DEFAULT ''");
     return db;
   } catch (error) {
     try {

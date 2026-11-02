@@ -242,14 +242,14 @@ export function assessReplacement({ replaced, kept, text }) {
 /**
  * 写一行 shadow_v2。字段顺序与 db.js 的 SCHEMA 一致。
  * @param {import('node:sqlite').DatabaseSync} db
- * @param {{sid:string,turn:number,t:number,rangeStart:number,rangeEnd:number,seqs:string,text:string,charsBefore:number,charsAfter:number,kept:number,lostRatio:number,dangling:number}} row
+ * @param {{sid:string,turn:number,t:number,rangeStart:number,rangeEnd:number,seqs:string,text:string,charsBefore:number,charsAfter:number,kept:number,lostRatio:number,dangling:number,cwd?:string}} row
  */
 export function recordShadowV2(db, row) {
   return db
     .prepare(
       `INSERT INTO shadow_v2
-       (sid, turn, t, range_start, range_end, seqs, text, chars_before, chars_after, kept, lost_ratio, dangling, applied)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (sid, turn, t, range_start, range_end, seqs, text, chars_before, chars_after, kept, lost_ratio, dangling, applied, cwd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       row.sid,
@@ -265,6 +265,7 @@ export function recordShadowV2(db, row) {
       row.lostRatio,
       row.dangling,
       row.applied ? 1 : 0,
+      row.cwd ?? '',
     );
 }
 
@@ -359,6 +360,7 @@ export function planShadowV2(
   const replaced = older.slice(-cap);
   if (replaced.length === 0) return null;
   const sid = String(session?.id ?? session?.sessionId ?? 'unknown');
+  const cwd = typeof session?.header?.cwd === 'string' ? session.header.cwd : '';
   const rangeStart = replaced[0].seq;
   const rangeEnd = replaced.at(-1).seq;
   // 同一区间不重复记账：每轮都会重算，但被换的窗口没动就没新信息。
@@ -388,6 +390,7 @@ export function planShadowV2(
     lostRatio: assessment.lostRatio,
     dangling: assessment.dangling.length,
     applied: false,
+    cwd,
   };
   const info = recordShadowV2(db, row);
   // 真替换不能在 session/event 回调里同步 append：此刻宿主还在发布边界内，

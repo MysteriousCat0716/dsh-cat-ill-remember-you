@@ -9,12 +9,13 @@ import { ingestEvent, textOf } from './ingest.js';
 import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { planShadowV2 } from './shadow-v2.js';
+import { planCarry } from './carry.js';
 import { forgetSweep } from './forget.js';
 import { embedPending } from './embed.js';
 
 export const name = 'dsh-cat-ill-remember-you';
 
-export const inject = [];
+export const inject = ['sessions'];
 
 /** The injected hint is a user message with a non-user source, so ingest skips it. */
 function hintMessage(text) {
@@ -153,56 +154,79 @@ export function apply(ctx) {
     try {
       const db = currentStore();
       if (!db) return decision;
-      const query = lastUserText(messages);
-      if (!query) return decision;
-      const hits = retrieve(db, {
-        text: query,
-        // 当前这句本身不算「已经有什么」，否则 dsh 这类高频实体会把自己挡掉。
-        recent: recentTexts(messages).filter((text) => text !== query),
-      });
-      if (hits.length === 0) return decision;
-      const text = renderHint(hits);
-      log(`recall hits=${hits.length} chars=${text.length}`);
       const sid = String(agent?.id ?? '');
       // turn lives on the pre-step payload, not on the Agent object.
       const turnNo = Number.isFinite(Number(turn)) ? Number(turn) : 0;
-      for (const hit of hits) {
+      const extra = [];
+
+      // M5：第一轮接上同一个 workspace 里上一个会话的最后缓存。
+      // 只认真替换过的行（applied=1），那是模型实际读过的接续文本；
+      // cwd 为空的历史行不参与——宁可接不上也不串项目。
+      if (turnNo <= 1) {
         try {
-          db.prepare(
-            'INSERT INTO recall_log (sid, turn, t, memory_id, why) VALUES (?, ?, ?, ?, ?)',
-          ).run(
-            sid,
-            turnNo,
-            Date.now(),
-            hit.source === 'memory' ? hit.id : null,
-            hit.why ?? '',
-          );
+          const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sid) : undefined;
+          const cwd = session?.header?.cwd;
+          const carry = planCarry(db, { cwd, sid, turn: turnNo, messages: decision.messages });
+          if (carry) {
+            extra.push(hintMessage(carry));
+            log(`carry chars=${carry.length} cwd=${cwd}`);
+          }
         } catch (error) {
-          log(`recall log failed: ${error?.message ?? error}`);
+          log(`carry failed: ${error?.message ?? error}`);
         }
       }
-      // A hit that was actually injected counts as "used": without this,
-      // forgetSweep would demote a memory that is read every day after 30 days.
-      try {
-        const ids = hits.filter((hit) => hit.source === 'memory').map((hit) => hit.id);
-        if (ids.length > 0) {
-          db.prepare(
-            `UPDATE memories SET last_used = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
-          ).run(Date.now(), ...ids);
+
+      const query = lastUserText(messages);
+      if (query) {
+        const hits = retrieve(db, {
+          text: query,
+          // 当前这句本身不算「已经有什么」，否则 dsh 这类高频实体会把自己挡掉。
+          recent: recentTexts(messages).filter((text) => text !== query),
+        });
+        if (hits.length > 0) {
+          const text = renderHint(hits);
+          log(`recall hits=${hits.length} chars=${text.length}`);
+          for (const hit of hits) {
+            try {
+              db.prepare(
+                'INSERT INTO recall_log (sid, turn, t, memory_id, why) VALUES (?, ?, ?, ?, ?)',
+              ).run(
+                sid,
+                turnNo,
+                Date.now(),
+                hit.source === 'memory' ? hit.id : null,
+                hit.why ?? '',
+              );
+            } catch (error) {
+              log(`recall log failed: ${error?.message ?? error}`);
+            }
+          }
+          // A hit that was actually injected counts as "used": without this,
+          // forgetSweep would demote a memory that is read every day after 30 days.
+          try {
+            const ids = hits.filter((hit) => hit.source === 'memory').map((hit) => hit.id);
+            if (ids.length > 0) {
+              db.prepare(
+                `UPDATE memories SET last_used = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
+              ).run(Date.now(), ...ids);
+            }
+          } catch (error) {
+            log(`last_used failed: ${error?.message ?? error}`);
+          }
+          // M3 影子：算「如果替换会少给多少、补多少」，只记账，不改 messages。
+          try {
+            const plan = shadowPlan({ messages, hits, query });
+            plan.hintChars = text.length;
+            recordShadow(db, { sid, turn: turnNo, ...plan });
+            if (plan.replaced > 0) log(`shadow replaced=${plan.replaced} saved=${plan.replacedChars} added=${plan.added}`);
+          } catch (error) {
+            log(`shadow failed: ${error?.message ?? error}`);
+          }
+          extra.push(hintMessage(text));
         }
-      } catch (error) {
-        log(`last_used failed: ${error?.message ?? error}`);
       }
-      // M3 影子：算「如果替换会少给多少、补多少」，只记账，不改 messages。
-      try {
-        const plan = shadowPlan({ messages, hits, query });
-        plan.hintChars = text.length;
-        recordShadow(db, { sid, turn: turnNo, ...plan });
-        if (plan.replaced > 0) log(`shadow replaced=${plan.replaced} saved=${plan.replacedChars} added=${plan.added}`);
-      } catch (error) {
-        log(`shadow failed: ${error?.message ?? error}`);
-      }
-      return { ...decision, messages: [...decision.messages, hintMessage(text)] };
+      if (extra.length === 0) return decision;
+      return { ...decision, messages: [...decision.messages, ...extra] };
     } catch (error) {
       log(`recall failed: ${error?.message ?? error}`);
       return decision;
