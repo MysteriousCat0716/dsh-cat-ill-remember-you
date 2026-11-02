@@ -133,11 +133,9 @@ test('pre-step: 第一轮注入上一个会话的最后缓存', async () => {
   assert.equal(result.messages.filter((message) => message.source?.kind === 'user').length, 1);
 });
 
-test('pre-step: 聊过的会话不再注入（判据看会话历史，不看 pre-step 的 messages）', async () => {
+test('pre-step: 聊过的会话也会接上（每轮接续，不再只看第一轮）', async () => {
   const { decision: result } = await runPreStep({
     turn: 1,
-    // pre-step 的 messages 只是本轮 claim 到的新消息——这里和真实载荷一致，
-    // 只有一条 user；会话历史另放在 history 里。
     messages: [userMessage('继续')],
     history: [
       [1, 'user', '早'],
@@ -145,16 +143,20 @@ test('pre-step: 聊过的会话不再注入（判据看会话历史，不看 pre
       [3, 'user', '继续'],
     ],
   });
-  assert.equal(result.messages.filter((message) => message.source?.kind === 'memory-core').length, 0);
+  const injected = result.messages.filter((message) => message.source?.kind === 'memory-core');
+  assert.equal(injected.length, 1);
+  assert.ok(injected[0].content[0].text.startsWith(LAST_SESSION_MARK));
 });
 
-test('pre-step: 历史里已有标记时不重复注入（注入后未回复就重启）', async () => {
+test('pre-step: 历史里有旧标记时，新的接续仍然注入（去重靠 carry_log）', async () => {
   const { decision: result } = await runPreStep({
     turn: 1,
     messages: [userMessage('我回来了')],
     history: [[1, 'user', `${LAST_SESSION_MARK} 上一轮已注入`, { kind: 'memory-core' }]],
   });
-  assert.equal(result.messages.filter((message) => message.source?.kind === 'memory-core').length, 0);
+  const injected = result.messages.filter((message) => message.source?.kind === 'memory-core');
+  assert.equal(injected.length, 1);
+  assert.ok(injected[0].content[0].text.startsWith(LAST_SESSION_MARK));
 });
 
 test('pre-step: 有取回命中时 recall_log 落账（不因 turnNo 漏定义而静默失败）', async () => {

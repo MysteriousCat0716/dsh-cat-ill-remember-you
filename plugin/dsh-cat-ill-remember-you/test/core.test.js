@@ -8,7 +8,7 @@ function freshStore() {
   return openStore(':memory:');
 }
 
-test('schema creates all nine tables', () => {
+test('schema creates all ten tables', () => {
   const db = freshStore();
   const names = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
@@ -16,6 +16,7 @@ test('schema creates all nine tables', () => {
     .map((row) => row.name)
     .sort();
   assert.deepEqual(names, [
+    'carry_log',
     'embeddings',
     'entities',
     'forget_log',

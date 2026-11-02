@@ -116,6 +116,15 @@ CREATE TABLE IF NOT EXISTS shadow_v2 (
   applied      INTEGER NOT NULL DEFAULT 0,
   cwd          TEXT    NOT NULL DEFAULT ''
 );
+
+-- 跨会话接续的去重账：每个会话记得「上次接过谁、接到哪个 seq」。
+CREATE TABLE IF NOT EXISTS carry_log (
+  sid      TEXT    NOT NULL,
+  from_sid TEXT    NOT NULL,
+  from_seq INTEGER NOT NULL,
+  t        INTEGER NOT NULL,
+  PRIMARY KEY (sid, from_sid)
+);
 `;
 
 /**

@@ -160,9 +160,49 @@ export function hasAssistantTurn(session) {
 }
 
 /**
- * 接线用的纯函数：该不该注入、注入什么。
+ * 这个会话上次从 fromSid 接到哪个位置（seq / t）。0 表示没接过。
  * @param {import('node:sqlite').DatabaseSync} db
- * @param {{cwd?:string, sid?:string, session?:object, messages?:Array, maxChars?:number}} options
+ * @param {string} sid
+ * @param {string} fromSid
+ */
+export function lastCarry(db, sid, fromSid) {
+  try {
+    const row = db
+      .prepare('SELECT from_seq FROM carry_log WHERE sid = ? AND from_sid = ?')
+      .get(String(sid ?? ''), String(fromSid ?? ''));
+    return row ? Number(row.from_seq) || 0 : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * 记下「接过谁、接到哪」。写失败不影响注入，下次多注一次而已。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {string} sid
+ * @param {string} fromSid
+ * @param {number} fromSeq
+ */
+export function rememberCarry(db, sid, fromSid, fromSeq) {
+  try {
+    db.prepare(
+      `INSERT INTO carry_log (sid, from_sid, from_seq, t) VALUES (?, ?, ?, ?)
+       ON CONFLICT (sid, from_sid) DO UPDATE SET from_seq = excluded.from_seq, t = excluded.t`,
+    ).run(String(sid ?? ''), String(fromSid ?? ''), Number(fromSeq) || 0, Date.now());
+  } catch {
+    // 记账失败不影响本轮注入
+  }
+}
+
+/**
+ * 接线用的纯函数：该不该注入、注入什么。
+ *
+ * 2026-11-03 起是「每轮都看」：不再限新会话第一轮、不再只注一次。
+ * 判据是来源会话有没有比自己上次接过的更新——有就注入那一轮，
+ * 没更新就安静返回 null。这样两个会话交替说话时能互相接上。
+ *
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {{cwd?:string, sid?:string, session?:object, messages?:Array, maxChars?:number, sessionsRoot?:string}} options
  * @returns {string|null}
  */
 export function planCarry(
@@ -171,20 +211,24 @@ export function planCarry(
 ) {
   // 同一轮重放时兜底：本轮消息里已经有标记。
   if (hasCarry(messages)) return null;
-  // 拿不到会话就不猜——宁可接不上，也不要往一个可能聊了很久的会话里塞。
-  if (!session) return null;
-  if (hasCarryInSurface(session)) return null;
-  if (hasAssistantTurn(session)) return null;
   if (typeof cwd !== 'string' || cwd.trim() === '') return null;
-  // 正路：上一个会话的最后几条原文。
+  // 正路：别的会话的最后几条原文，按它最新一条的 seq 去重。
   let tail = null;
   try {
     tail = recentSessionOriginals({ cwd, excludeSid: sid, limit: 6, sessionsRoot });
   } catch {
     tail = null;
   }
-  if (tail && tail.messages.length > 0) return renderTailCarry(tail, maxChars);
+  if (tail && tail.messages.length > 0) {
+    const lastSeq = tail.messages[tail.messages.length - 1].seq;
+    if (lastCarry(db, sid, tail.sid) >= lastSeq) return null;
+    rememberCarry(db, sid, tail.sid, lastSeq);
+    return renderTailCarry(tail, maxChars);
+  }
   // 退路：原文文件读不到（旧会话已清理、盘上换过位置）时才用摘要缓存。
   const row = lastSessionCache(db, { cwd, sid, maxChars });
-  return row ? renderCarry(row) : null;
+  if (!row) return null;
+  if (lastCarry(db, sid, row.sid) >= row.t) return null;
+  rememberCarry(db, sid, row.sid, row.t);
+  return renderCarry(row);
 }

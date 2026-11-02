@@ -121,66 +121,87 @@ test('hasCarry: 认标记，不误伤普通消息', () => {
   assert.equal(hasCarry(undefined), false);
 });
 
-test('planCarry: 新会话注入，已有 assistant 历史的会话不注入', () =>
+test('planCarry: 每轮都可接，同一来源没更新就不再注', () =>
   withStore((db) => {
-    recordShadowV2(db, shadowRow());
-    // 新会话第一轮：surface 里只有本轮用户消息，没有 assistant。
-    assert.ok(
-      planCarry(db, {
-        cwd: '/w',
-        sid: 'me',
-        session: fakeSession([]),
-        messages: [{ role: 'user', content: '在吗' }],
-      }),
-    );
-    // 聊过的会话（含重启后恢复的旧会话）：pre-step 的 messages 只有本轮那条，
-    // 但 surface 里已经有 assistant——这是真实判据。
+    recordShadowV2(db, shadowRow({ sid: 'old-session', t: 2000, text: '旧会话结尾' }));
+    const first = planCarry(db, {
+      cwd: '/w',
+      sid: 'me',
+      session: fakeSession([]),
+      messages: [],
+      sessionsRoot: '/nonexistent',
+    });
+    assert.ok(first);
+    assert.ok(first.includes('旧会话结尾'));
+    // 来源没往前走：第二轮不再重复塞同一条。
     assert.equal(
       planCarry(db, {
         cwd: '/w',
         sid: 'me',
-        session: fakeSession([
-          [1, 'user', '早'],
-          [2, 'assistant', '在'],
-          [3, 'user', '继续'],
-        ]),
-        messages: [{ role: 'user', content: '继续' }],
+        session: fakeSession([]),
+        messages: [],
+        sessionsRoot: '/nonexistent',
       }),
       null,
     );
   }));
 
-test('planCarry: 已经注入过就不再注入（标记可能不在本轮 messages 里）', () =>
+test('planCarry: 来源有了更新就再接一次', () =>
   withStore((db) => {
-    recordShadowV2(db, shadowRow());
-    assert.equal(
+    recordShadowV2(db, shadowRow({ sid: 'old-session', t: 2000, text: '第一版' }));
+    assert.ok(
       planCarry(db, {
         cwd: '/w',
         sid: 'me',
-        session: fakeSession([[1, 'user', `${LAST_SESSION_MARK} 已注入`, { kind: 'memory-core' }]]),
-        messages: [{ role: 'user', content: '我回来了' }],
+        session: fakeSession([]),
+        messages: [],
+        sessionsRoot: '/nonexistent',
       }),
-      null,
     );
-    // 本轮 messages 自带标记（同一轮重放）也挡住。
+    recordShadowV2(db, shadowRow({ sid: 'old-session', t: 5000, text: '第二版' }));
+    const second = planCarry(db, {
+      cwd: '/w',
+      sid: 'me',
+      session: fakeSession([]),
+      messages: [],
+      sessionsRoot: '/nonexistent',
+    });
+    assert.ok(second);
+    assert.ok(second.includes('第二版'));
+  }));
+
+test('planCarry: 本轮消息带标记就不注（同轮重放）', () =>
+  withStore((db) => {
+    recordShadowV2(db, shadowRow());
     assert.equal(
       planCarry(db, {
         cwd: '/w',
         sid: 'me',
         session: fakeSession([]),
         messages: [{ role: 'user', content: `${LAST_SESSION_MARK} 已注入` }],
+        sessionsRoot: '/nonexistent',
       }),
       null,
     );
   }));
 
-test('planCarry: 拿不到会话就不猜', () =>
+test('planCarry: cwd 为空就不猜', () =>
   withStore((db) => {
     recordShadowV2(db, shadowRow());
-    assert.equal(planCarry(db, { cwd: '/w', sid: 'me', messages: [] }), null);
+    assert.equal(planCarry(db, { cwd: '', sid: 'me', messages: [] }), null);
+    assert.equal(planCarry(db, { sid: 'me', messages: [] }), null);
   }));
 
 test('planCarry: 没有可接的缓存就安静返回 null', () =>
   withStore((db) => {
-    assert.equal(planCarry(db, { cwd: '/w', sid: 'me', session: fakeSession([]), messages: [] }), null);
+    assert.equal(
+      planCarry(db, {
+        cwd: '/w',
+        sid: 'me',
+        session: fakeSession([]),
+        messages: [],
+        sessionsRoot: '/nonexistent',
+      }),
+      null,
+    );
   }));
