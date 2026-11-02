@@ -17,6 +17,14 @@ import { INJECT_RE } from './ingest.js';
 export const DEFAULT_KEEP = 10;
 export const DEFAULT_WINDOW = 40;
 export const MAX_REPLACE_CHARS = 600;
+
+/** 读整数环境变量；空值或非法值回落到默认。 */
+function envInt(name, fallback) {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
+}
 export const REFERRAL = /(那个|这个|它|上面|刚才|之前|前面|上次|这里|那些|这些|这事|那句)/;
 
 const CONDENSE_USER = 100;
@@ -218,7 +226,15 @@ export function recordShadowV2(db, row) {
  * 一轮结束时调用：算替换文本 + 评估 + 落库。只记账。
  * @returns {object|null}
  */
-export function planShadowV2(session, db, { keep = DEFAULT_KEEP, window = DEFAULT_WINDOW, now = Date.now() } = {}) {
+export function planShadowV2(
+  session,
+  db,
+  {
+    keep = envInt('DSH_MEMORY_CORE_KEEP', DEFAULT_KEEP),
+    window = envInt('DSH_MEMORY_CORE_SHADOW_WINDOW', DEFAULT_WINDOW),
+    now = Date.now(),
+  } = {},
+) {
   const entries = surfaceMessages(session);
   if (entries.length <= keep) return null;
   const { replaced: older, kept } = splitKeep(entries, keep);

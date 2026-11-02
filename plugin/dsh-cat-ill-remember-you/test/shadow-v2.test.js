@@ -139,3 +139,35 @@ test('planShadowV2: 只取最近 window 条老消息', () => {
   assert.equal(plan.kept, 10);
   db.close();
 });
+
+test('planShadowV2: keep 可由 DSH_MEMORY_CORE_KEEP 覆盖', () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 20), 'sid-env');
+  const previous = process.env.DSH_MEMORY_CORE_KEEP;
+  process.env.DSH_MEMORY_CORE_KEEP = '5';
+  try {
+    const plan = planShadowV2(session, db, { now: 1 });
+    assert.ok(plan);
+    assert.equal(plan.kept, 5);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_KEEP;
+    else process.env.DSH_MEMORY_CORE_KEEP = previous;
+    db.close();
+  }
+});
+
+test('planShadowV2: 环境变量非法时回落到默认 keep', () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 20), 'sid-env-bad');
+  const previous = process.env.DSH_MEMORY_CORE_KEEP;
+  process.env.DSH_MEMORY_CORE_KEEP = 'nope';
+  try {
+    const plan = planShadowV2(session, db, { now: 1 });
+    assert.ok(plan);
+    assert.equal(plan.kept, 10);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_KEEP;
+    else process.env.DSH_MEMORY_CORE_KEEP = previous;
+    db.close();
+  }
+});
