@@ -15,6 +15,23 @@ function isInjected(text) {
   return /^\s*(\[记忆\]|\[记忆提示\]|\[MEMORY HINT\])/.test(text);
 }
 
+/** 弱 token（普通词）需要同一条消息命中两个，才认为它可能被覆盖。 */
+const WEAK_HITS = 2;
+
+/** 路径/文件名/长专名：单独命中就有说服力。 */
+function isStrongAnchor(token) {
+  return /[\\/._-]/.test(token) || token.length >= 6;
+}
+
+/** 纯 ASCII 用词边界，避免 cat 命中 category；中文没有词边界，退回 includes。 */
+export function tokenInText(text, token) {
+  if (/^[\x20-\x7e]+$/.test(token) && /[A-Za-z0-9]/.test(token)) {
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|[^A-Za-z0-9_])${escaped}([^A-Za-z0-9_]|$)`).test(text);
+  }
+  return text.includes(token);
+}
+
 /**
  * @param {{
  *   messages: Array<{role?: string, content?: unknown, source?: {kind?: string}}>,
@@ -41,7 +58,10 @@ export function shadowPlan({ messages, hits, query = '' }) {
     const text = textOf(message);
     if (!text || text === query || isInjected(text)) continue;
     // 当前这句本身不参与替换：它正是要回答的那一轮。
-    if (needles.some((needle) => text.includes(needle))) {
+    // 只命中一个通用词不算：`dsh` / `记忆` 这类短词几乎每条消息都有，
+    // 拿它当「这条消息被记忆覆盖」会把节省量算高，而替换不可逆。
+    const matched = needles.filter((needle) => tokenInText(text, needle));
+    if (matched.some(isStrongAnchor) || matched.length >= WEAK_HITS) {
       replaced += 1;
       replacedChars += text.length;
     }

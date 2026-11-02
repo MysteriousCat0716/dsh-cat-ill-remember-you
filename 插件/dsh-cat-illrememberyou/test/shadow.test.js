@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openStore } from '../lib/db.js';
-import { shadowPlan, recordShadow } from '../lib/shadow.js';
+import { shadowPlan, recordShadow, tokenInText } from '../lib/shadow.js';
 
 function msg(role, text, kind) {
   const message = { role, content: [{ type: 'text', text }] };
@@ -65,4 +65,28 @@ test('recordShadow writes one row', () => {
   assert.equal(row.replaced, 2);
   assert.equal(row.replaced_chars, 120);
   db.close();
+});
+
+test('shadowPlan does not count a single generic word as a covered message', () => {
+  const plan = shadowPlan({
+    messages: [msg('user', 'dsh 这个工具怎么用')],
+    hits: [{ anchors: [], entities: ['dsh'] }],
+    query: '继续',
+  });
+  assert.equal(plan.replaced, 0);
+});
+
+test('shadowPlan counts a message with two weak-token hits', () => {
+  const plan = shadowPlan({
+    messages: [msg('user', '记忆 插件 这两个词都出现了')],
+    hits: [{ anchors: ['记忆', '插件'] }],
+    query: '继续',
+  });
+  assert.equal(plan.replaced, 1);
+});
+
+test('tokenInText respects ASCII word boundaries', () => {
+  assert.equal(tokenInText('category theory', 'cat'), false);
+  assert.equal(tokenInText('the cat sat', 'cat'), true);
+  assert.equal(tokenInText('提到 lib/recall.js 的路径', 'lib/recall.js'), true);
 });
