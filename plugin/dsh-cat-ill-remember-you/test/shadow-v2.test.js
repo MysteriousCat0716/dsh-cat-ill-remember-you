@@ -1,4 +1,4 @@
-import test from 'node:test';
+import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -56,6 +56,44 @@ function tempSessionList(sids) {
   fs.writeFileSync(file, `${sids.join('\n')}\n`, 'utf8');
   return { file, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
+
+/** 临时打开白名单；返回清理函数。 */
+function useWhitelist(sids) {
+  const previous = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  const list = tempSessionList(sids);
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  return () => {
+    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previous;
+    list.cleanup();
+  };
+}
+
+/**
+ * 记账与替换都只发生在白名单内的会话；测试默认把所有用到的 sid 放进白名单。
+ * 需要验证「白名单外」的测试自己再调 useWhitelist 覆盖。
+ */
+let restoreDefaultWhitelist = null;
+beforeEach(() => {
+  restoreDefaultWhitelist = useWhitelist([
+    'sid-test',
+    'sid-abc',
+    'sid-w',
+    'sid-roll',
+    'sid-chars',
+    'sid-env',
+    'sid-env-bad',
+    'sid-no-replace',
+    'sid-dedupe',
+    'sid-retry',
+    'sid-apply',
+    'sid-gap',
+  ]);
+});
+afterEach(() => {
+  restoreDefaultWhitelist?.();
+  restoreDefaultWhitelist = null;
+});
 
 /** 真替换推在微任务里做，断言前等它落地。 */
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -229,22 +267,19 @@ test('planShadowV2: 环境变量非法时回落到动态 keep（旧模式兜底�
   }
 });
 
-test('planShadowV2: 默认不真替换（REPLACE 关）', async () => {
+test('planShadowV2: 白名单外默认什么都不做', async () => {
   const db = openStore(':memory:');
+  const cleanup = useWhitelist([]); // 空名单 = 全关
   const session = fakeSession(textEntries('消息', 14), 'sid-no-replace');
-  const previous = process.env.DSH_MEMORY_CORE_REPLACE;
-  delete process.env.DSH_MEMORY_CORE_REPLACE;
   try {
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
-    assert.ok(plan);
-    assert.equal(plan.applied, false);
+    assert.equal(plan, null);
     await tick();
     assert.equal(session.appended.length, 0);
-    const row = db.prepare('SELECT applied FROM shadow_v2 ORDER BY id DESC LIMIT 1').get();
-    assert.equal(Number(row.applied), 0);
+    const count = db.prepare('SELECT COUNT(*) AS n FROM shadow_v2').get().n;
+    assert.equal(Number(count), 0);
   } finally {
-    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;
-    else process.env.DSH_MEMORY_CORE_REPLACE = previous;
+    cleanup();
     db.close();
   }
 });
@@ -320,23 +355,20 @@ test('planShadowV2: 替换文本变大也真换（它是缓存不是压缩）', 
   }
 });
 
-test('planShadowV2: REPLACE=1 但会话不在白名单时不替换', async () => {
+test('planShadowV2: 会话不在白名单时什么都不做', async () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 14), 'sid-other');
-  const previous = process.env.DSH_MEMORY_CORE_REPLACE;
   const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
   const list = tempSessionList(['sid-replace']);
-  process.env.DSH_MEMORY_CORE_REPLACE = '1';
   process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
   try {
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
-    assert.ok(plan);
-    assert.equal(plan.applied, false);
+    assert.equal(plan, null);
     await tick();
     assert.equal(session.appended.length, 0);
+    const count = db.prepare('SELECT COUNT(*) AS n FROM shadow_v2').get().n;
+    assert.equal(Number(count), 0);
   } finally {
-    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;
-    else process.env.DSH_MEMORY_CORE_REPLACE = previous;
     if (previousList === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
     else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
     list.cleanup();
@@ -356,12 +388,13 @@ test('renderReplacement: 约定句原样留在「约定：」段', () => {
   assert.ok(text.length <= MAX_REPLACE_CHARS);
 });
 
-test('planShadowV2: 同一区间不重复记账', () => {
+test('planShadowV2: 同一区间换成功后不再重复记账', async () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 14), 'sid-dedupe');
   const first = planShadowV2(session, db, { keep: 10, now: 1 });
-  const second = planShadowV2(session, db, { keep: 10, now: 2 });
   assert.ok(first);
+  await tick();
+  const second = planShadowV2(session, db, { keep: 10, now: 2 });
   assert.equal(second, null);
   const count = db.prepare('SELECT COUNT(*) AS n FROM shadow_v2').get().n;
   assert.equal(Number(count), 1);

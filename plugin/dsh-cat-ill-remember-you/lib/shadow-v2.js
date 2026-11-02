@@ -389,12 +389,15 @@ export function planShadowV2(
   }
   if (replaced.length === 0) return null;
   const sid = String(session?.id ?? session?.sessionId ?? 'unknown');
+  // 白名单外不记账：这些会话不会真替换，账本只会随宿主压缩反复增行。
+  // 「只看会怎么换」的推演也放进白名单会话里做，别让它变成噪音。
+  if (!replaceEnabled(sid)) return null;
   const cwd = typeof session?.header?.cwd === 'string' ? session.header.cwd : '';
   const rangeStart = replaced[0].seq;
   const rangeEnd = replaced.at(-1).seq;
   // 同一区间不重复记账：每轮都会重算，但被换的窗口没动就没新信息。
-  // 例外：白名单内上一次 apply 失败（applied=0）时允许重试，否则一次
-  // 微任务失败会让这段永远停在原文；只看不换的会话仍然去重。
+  // 上一次 apply 失败（applied=0）时允许重试，否则一次微任务失败会让
+  // 这段永远停在原文。
   const last = db
     .prepare('SELECT range_start, range_end, applied FROM shadow_v2 WHERE sid = ? ORDER BY id DESC LIMIT 1')
     .get(sid);
@@ -402,7 +405,7 @@ export function planShadowV2(
     last
     && last.range_start === rangeStart
     && last.range_end === rangeEnd
-    && (!replaceEnabled(sid) || Number(last.applied) === 1)
+    && Number(last.applied) === 1
   ) {
     return null;
   }
