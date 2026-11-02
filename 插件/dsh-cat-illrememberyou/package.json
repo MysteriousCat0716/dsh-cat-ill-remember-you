@@ -1,0 +1,31 @@
+{
+  "name": "dsh-cat-illrememberyou",
+  "version": "0.1.0",
+  "description": "Memory core: append-only dialogue turns in SQLite, distilled memories with retrieval summaries, and structural + vector recall gated by a written reason.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "memory",
+    "sqlite"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
