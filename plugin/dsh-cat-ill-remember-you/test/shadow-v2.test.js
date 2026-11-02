@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 import { openStore } from '../lib/db.js';
 import {
@@ -43,6 +46,14 @@ function textEntries(prefix, count) {
     entries.push([i + 1, i % 2 === 0 ? 'user' : 'assistant', `${prefix} 第 ${i + 1} 条`]);
   }
   return entries;
+}
+
+/** 临时白名单文件：只有列出的会话才允许真替换。 */
+function tempSessionList(sids) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'replace-sessions-'));
+  const file = path.join(dir, 'list.txt');
+  fs.writeFileSync(file, `${sids.join('\n')}\n`, 'utf8');
+  return { file, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
 }
 
 test('surfaceMessages: 跳过 system head，只收 user/assistant', () => {
@@ -197,11 +208,14 @@ test('planShadowV2: 默认不真替换（REPLACE 关）', () => {
   }
 });
 
-test('planShadowV2: REPLACE=1 时写 surfaceOp.replace，覆盖整个窗口', () => {
+test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 14), 'sid-replace');
   const previous = process.env.DSH_MEMORY_CORE_REPLACE;
+  const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  const list = tempSessionList(['sid-replace']);
   process.env.DSH_MEMORY_CORE_REPLACE = '1';
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
   try {
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
     assert.ok(plan);
@@ -220,6 +234,32 @@ test('planShadowV2: REPLACE=1 时写 surfaceOp.replace，覆盖整个窗口', ()
   } finally {
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;
     else process.env.DSH_MEMORY_CORE_REPLACE = previous;
+    if (previousList === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
+    list.cleanup();
+    db.close();
+  }
+});
+
+test('planShadowV2: REPLACE=1 但会话不在白名单时不替换', () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 14), 'sid-other');
+  const previous = process.env.DSH_MEMORY_CORE_REPLACE;
+  const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  const list = tempSessionList(['sid-replace']);
+  process.env.DSH_MEMORY_CORE_REPLACE = '1';
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  try {
+    const plan = planShadowV2(session, db, { keep: 10, now: 1 });
+    assert.ok(plan);
+    assert.equal(plan.applied, false);
+    assert.equal(session.appended.length, 0);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;
+    else process.env.DSH_MEMORY_CORE_REPLACE = previous;
+    if (previousList === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
+    list.cleanup();
     db.close();
   }
 });

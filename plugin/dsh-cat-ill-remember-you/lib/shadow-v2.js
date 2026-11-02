@@ -13,6 +13,9 @@
 
 import { anchorsOf, entitiesOf } from './extract.js';
 import { INJECT_RE } from './ingest.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 export const DEFAULT_KEEP = 10;
 export const DEFAULT_WINDOW = 40;
@@ -258,9 +261,28 @@ export function recordShadowV2(db, row) {
 /** 真替换开关，默认关。只认 '1' / 'true'。 */
 export const REPLACE_FLAG = 'DSH_MEMORY_CORE_REPLACE';
 
-export function replaceEnabled() {
+/** 白名单文件：每行一个 session id，`*` 表示全部。只有列在里面的会话才真替换。 */
+export const REPLACE_SESSIONS_FLAG = 'DSH_MEMORY_CORE_REPLACE_SESSIONS';
+export const REPLACE_SESSIONS_FILE = path.join(os.homedir(), '.dsh', 'cache', 'replace-sessions.txt');
+
+function sessionsFile() {
+  return process.env[REPLACE_SESSIONS_FLAG] || REPLACE_SESSIONS_FILE;
+}
+
+export function replaceEnabled(sid) {
   const raw = process.env[REPLACE_FLAG];
-  return raw === '1' || raw === 'true';
+  if (raw !== '1' && raw !== 'true') return false;
+  // 白名单是第二道闸：没写进文件的会话一律不换，防止误伤正在用的对话。
+  // 文件不存在也当作空名单——宁可测试跑不起来，也不悄悄全局开。
+  let lines;
+  try {
+    lines = fs.readFileSync(sessionsFile(), 'utf8').split(/\r?\n/);
+  } catch {
+    return false;
+  }
+  const allowed = lines.map((line) => line.trim()).filter(Boolean);
+  if (allowed.includes('*')) return true;
+  return sid != null && allowed.includes(String(sid));
 }
 
 /**
@@ -269,8 +291,8 @@ export function replaceEnabled() {
  * surface.nodes 里落在区间内的全部 seq（含工具结果）。
  * @returns {boolean} 是否真的写入了替换事件
  */
-export function applyReplacement(session, replaced, text) {
-  if (!replaceEnabled()) return false;
+export function applyReplacement(session, replaced, text, sid) {
+  if (!replaceEnabled(sid)) return false;
   if (!Array.isArray(replaced) || replaced.length === 0) return false;
   if (typeof session?.append !== 'function') return false;
   const startSeq = replaced[0].seq;
@@ -320,7 +342,7 @@ export function planShadowV2(
   const text = renderReplacement(replaced);
   const assessment = assessReplacement({ replaced, kept, text });
   const charsBefore = replaced.reduce((total, entry) => total + entry.text.length, 0);
-  const applied = applyReplacement(session, replaced, text);
+  const applied = applyReplacement(session, replaced, text, sid);
   const row = {
     sid,
     turn: 0,
