@@ -16,6 +16,7 @@ function fakeSession(entries, id = 'sid-test') {
   const events = new Map(
     entries.map(([seq, role, text, source]) => [seq, { seq, role, text, source }]),
   );
+  const appended = [];
   return {
     id,
     surface: { nodes: [0, ...entries.map(([seq]) => seq)] },
@@ -28,6 +29,11 @@ function fakeSession(entries, id = 'sid-test') {
             ...(event.source ? { source: event.source } : {}),
           }
         : undefined,
+    append: (type, data, options) => {
+      appended.push({ type, data, options });
+      return { seq: 900 + appended.length };
+    },
+    appended,
   };
 }
 
@@ -168,6 +174,52 @@ test('planShadowV2: 环境变量非法时回落到默认 keep', () => {
   } finally {
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_KEEP;
     else process.env.DSH_MEMORY_CORE_KEEP = previous;
+    db.close();
+  }
+});
+
+test('planShadowV2: 默认不真替换（REPLACE 关）', () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 14), 'sid-no-replace');
+  const previous = process.env.DSH_MEMORY_CORE_REPLACE;
+  delete process.env.DSH_MEMORY_CORE_REPLACE;
+  try {
+    const plan = planShadowV2(session, db, { keep: 10, now: 1 });
+    assert.ok(plan);
+    assert.equal(plan.applied, false);
+    assert.equal(session.appended.length, 0);
+    const row = db.prepare('SELECT applied FROM shadow_v2 ORDER BY id DESC LIMIT 1').get();
+    assert.equal(Number(row.applied), 0);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;
+    else process.env.DSH_MEMORY_CORE_REPLACE = previous;
+    db.close();
+  }
+});
+
+test('planShadowV2: REPLACE=1 时写 surfaceOp.replace，覆盖整个窗口', () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 14), 'sid-replace');
+  const previous = process.env.DSH_MEMORY_CORE_REPLACE;
+  process.env.DSH_MEMORY_CORE_REPLACE = '1';
+  try {
+    const plan = planShadowV2(session, db, { keep: 10, now: 1 });
+    assert.ok(plan);
+    assert.equal(plan.applied, true);
+    assert.equal(session.appended.length, 1);
+    const call = session.appended[0];
+    assert.equal(call.type, 'user/message');
+    assert.equal(call.options.surfaceOp.op, 'replace');
+    assert.equal(call.options.surfaceOp.startSeq, plan.rangeStart);
+    assert.equal(call.options.surfaceOp.endSeq, plan.rangeEnd);
+    const nodes = session.surface.nodes.filter(
+      (seq) => seq >= plan.rangeStart && seq <= plan.rangeEnd,
+    );
+    assert.deepEqual(call.options.sourceEventSeqs, nodes);
+    assert.ok(call.data.content[0].text.length <= MAX_REPLACE_CHARS);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;
+    else process.env.DSH_MEMORY_CORE_REPLACE = previous;
     db.close();
   }
 });

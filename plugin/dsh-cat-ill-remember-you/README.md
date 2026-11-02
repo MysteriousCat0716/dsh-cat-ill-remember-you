@@ -40,6 +40,9 @@ node --test test/
 | `DSH_MEMORY_CORE_EMBED_MODEL` | `qwen3-embedding:0.6b` | 向量模型 |
 | `DSH_MEMORY_CORE_OLLAMA` | `http://127.0.0.1:11434` | Ollama 地址 |
 | `DSH_MEMORY_CORE_EMBED_BATCH` | `16` | 每批补多少条向量 |
+| `DSH_MEMORY_CORE_KEEP` | `10` | 影子/替换时保留多少条原文 |
+| `DSH_MEMORY_CORE_SHADOW_WINDOW` | `40` | 每次被换窗口最多取多少条 |
+| `DSH_MEMORY_CORE_REPLACE` | `0` | 真替换开关；`1` 才写 `surfaceOp.replace` |
 
 ## 已知缺口
 

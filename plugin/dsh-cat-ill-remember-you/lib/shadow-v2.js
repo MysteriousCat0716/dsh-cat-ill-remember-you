@@ -90,6 +90,8 @@ export function surfaceMessages(session) {
     if (role === 'user') {
       const kind = message?.source?.kind;
       if (typeof kind === 'string' && kind !== 'user') continue;
+      // 我们自己写进历史的替换文本不能再被当成「他说」。
+      if (text.startsWith('[上下文替换]')) continue;
       if (!message?.source && INJECT_RE.test(text)) continue;
     }
     out.push({ seq, role, message, text });
@@ -207,8 +209,8 @@ export function assessReplacement({ replaced, kept, text }) {
 export function recordShadowV2(db, row) {
   db.prepare(
     `INSERT INTO shadow_v2
-       (sid, turn, t, range_start, range_end, seqs, text, chars_before, chars_after, kept, lost_ratio, dangling)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (sid, turn, t, range_start, range_end, seqs, text, chars_before, chars_after, kept, lost_ratio, dangling, applied)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.sid,
     row.turn,
@@ -222,7 +224,43 @@ export function recordShadowV2(db, row) {
     row.kept,
     row.lostRatio,
     row.dangling,
+    row.applied ? 1 : 0,
   );
+}
+
+/** 真替换开关，默认关。只认 '1' / 'true'。 */
+export const REPLACE_FLAG = 'DSH_MEMORY_CORE_REPLACE';
+
+export function replaceEnabled() {
+  const raw = process.env[REPLACE_FLAG];
+  return raw === '1' || raw === 'true';
+}
+
+/**
+ * 真替换：把被换窗口压成一条 user/message，用 surfaceOp.replace 盖掉原区间。
+ * 宿主校验要求 sourceEventSeqs 覆盖区间内每个 surface node，所以这里取
+ * surface.nodes 里落在区间内的全部 seq（含工具结果）。
+ * @returns {boolean} 是否真的写入了替换事件
+ */
+export function applyReplacement(session, replaced, text) {
+  if (!replaceEnabled()) return false;
+  if (!Array.isArray(replaced) || replaced.length === 0) return false;
+  if (typeof session?.append !== 'function') return false;
+  const startSeq = replaced[0].seq;
+  const endSeq = replaced.at(-1).seq;
+  const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes : [];
+  const seqs = nodes.filter((seq) => seq >= startSeq && seq <= endSeq);
+  if (seqs.length === 0) return false;
+  try {
+    session.append(
+      'user/message',
+      { role: 'user', content: [{ type: 'text', text }] },
+      { surfaceOp: { op: 'replace', startSeq, endSeq }, sourceEventSeqs: seqs },
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -247,6 +285,7 @@ export function planShadowV2(
   const text = renderReplacement(replaced);
   const assessment = assessReplacement({ replaced, kept, text });
   const charsBefore = replaced.reduce((total, entry) => total + entry.text.length, 0);
+  const applied = applyReplacement(session, replaced, text);
   const row = {
     sid: String(session?.id ?? session?.sessionId ?? 'unknown'),
     turn: 0,
@@ -260,6 +299,7 @@ export function planShadowV2(
     kept: kept.length,
     lostRatio: assessment.lostRatio,
     dangling: assessment.dangling.length,
+    applied,
   };
   recordShadowV2(db, row);
   return {
