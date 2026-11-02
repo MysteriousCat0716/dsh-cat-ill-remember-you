@@ -138,10 +138,13 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS } = {
   const last = list.at(-1)?.seq ?? 0;
   // 实体·锚点清单先写：断链几乎都发生在这些 token 上，把它们钉在文本最前面。
   const keywords = keyTokens(list).slice(0, 24);
+  // 约定句原样留：关键词救不了「以后不要怎样」，句子才行。
+  const promises = promiseLines(list, { max: 4, chars: 36 });
   const header =
     `[上下文替换] 更早的 ${list.length} 条消息（seq ${first}-${last}）原文在本地，` +
     `这里只留接得上的摘要：\n` +
-    (keywords.length > 0 ? `关键词：${keywords.join('、')}\n` : '');
+    (keywords.length > 0 ? `关键词：${keywords.join('、')}\n` : '') +
+    (promises.length > 0 ? `约定：${promises.join('；')}\n` : '');
   const limit = Math.max(80, maxChars - header.length - 10);
   const picked = [];
   let size = 0;
@@ -175,6 +178,30 @@ export function keyTokens(entries) {
   for (const entity of entitiesOf(source)) tokens.add(entity);
   for (const anchor of anchorsOf(source)) tokens.add(anchor);
   return [...tokens];
+}
+
+const PROMISE_RE = /(不要|别再|别忘|记住|以后|约定|答应|下次|永远|说好)/;
+
+/**
+ * 从被换窗口里挑出带约定词的句子。约定句必须原样留，不能只剩关键词。
+ * @param {Array} entries
+ * @param {{max?:number, chars?:number}} [options]
+ */
+export function promiseLines(entries, { max = 4, chars = 36 } = {}) {
+  const seen = new Set();
+  const out = [];
+  for (const entry of Array.isArray(entries) ? entries : []) {
+    for (const part of String(entry?.text ?? '').split(/[。；\n]+/)) {
+      const s = squash(part);
+      if (s.length < 4 || !PROMISE_RE.test(s)) continue;
+      const key = s.slice(0, 16);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(clip(s, chars));
+      if (out.length >= max) return out;
+    }
+  }
+  return out;
 }
 
 /**

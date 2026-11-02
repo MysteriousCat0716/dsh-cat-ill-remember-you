@@ -223,3 +223,27 @@ test('planShadowV2: REPLACE=1 时写 surfaceOp.replace，覆盖整个窗口', ()
     db.close();
   }
 });
+
+test('renderReplacement: 约定句原样留在「约定：」段', () => {
+  const entries = [
+    { seq: 1, role: 'user', text: '以后不要主动压记忆，压缩要单独一轮。' },
+    { seq: 2, role: 'assistant', text: '记住了，压缩独自一轮。' },
+    { seq: 3, role: 'user', text: '今天天气不错。' },
+  ];
+  const text = renderReplacement(entries);
+  assert.match(text, /约定：/);
+  assert.match(text, /不要主动压记忆/);
+  assert.ok(text.length <= MAX_REPLACE_CHARS);
+});
+
+test('planShadowV2: 同一区间不重复记账', () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 14), 'sid-dedupe');
+  const first = planShadowV2(session, db, { keep: 10, now: 1 });
+  const second = planShadowV2(session, db, { keep: 10, now: 2 });
+  assert.ok(first);
+  assert.equal(second, null);
+  const count = db.prepare('SELECT COUNT(*) AS n FROM shadow_v2').get().n;
+  assert.equal(Number(count), 1);
+  db.close();
+});
