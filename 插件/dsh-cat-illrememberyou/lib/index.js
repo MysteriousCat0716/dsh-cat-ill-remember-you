@@ -70,14 +70,25 @@ function log(line) {
  */
 export function apply(ctx) {
   let store;
+  // Set by the effect cleanup. An in-flight pre-step may still be awaiting
+  // next() when the host disposes this scope; without this flag currentStore()
+  // would happily reopen the db and write after unload.
+  let disposed = false;
   let timer = null;
   let lastActivity = Date.now();
-  const idleMs = Number(process.env.DSH_MEMORY_CORE_IDLE_MS ?? 5 * 60 * 1000);
-  const tickMs = Number(process.env.DSH_MEMORY_CORE_TICK_MS ?? 60 * 1000);
+  // Number('abc') / Number('') would silently become NaN / 0 and turn the
+  // interval into a 1ms spin; keep a finite, positive floor.
+  const envMs = (name, fallback) => {
+    const value = Number(process.env[name]);
+    return Number.isFinite(value) && value > 0 ? value : fallback;
+  };
+  const idleMs = envMs('DSH_MEMORY_CORE_IDLE_MS', 5 * 60 * 1000);
+  const tickMs = envMs('DSH_MEMORY_CORE_TICK_MS', 60 * 1000);
   const file = process.env.DSH_MEMORY_CORE_DB || undefined;
 
   /** Reopen if the host disposed the store under us; null when the db is unusable. */
   function currentStore() {
+    if (disposed) return null;
     if (store) {
       try {
         store.prepare('SELECT 1').get();
@@ -102,7 +113,10 @@ export function apply(ctx) {
     }
   }
 
-  if (!currentStore()) return;
+  // Do not bail out when the store is unavailable at load time: a transient
+  // failure (lock, half-written file) would otherwise silence the plugin for
+  // the rest of the process. Listeners stay registered and reopen lazily.
+  if (!currentStore()) log('store unavailable at load; will retry lazily');
   startTimer();
 
   ctx.on('session/event', (session, event) => {
@@ -123,7 +137,7 @@ export function apply(ctx) {
   // M2：每轮第一个 step 之前取回，注入一条带门槛的提示。
   // 写不出 why 的候选在 retrieve() 里已被丢弃；注入消息带 memory-core 来源，
   // 不会被 M0 的 ingest 当成他的话再收一遍。
-  ctx.on('agent/pre-step', async ({ agent, messages, signal, step }, next) => {
+  ctx.on('agent/pre-step', async ({ agent, messages, signal, step, turn }, next) => {
     const decision = await next();
     if (decision?.kind === 'reject' || signal?.aborted) return decision;
     if (step !== 1) return decision;
@@ -141,14 +155,15 @@ export function apply(ctx) {
       const text = renderHint(hits);
       log(`recall hits=${hits.length} chars=${text.length}`);
       const sid = String(agent?.id ?? '');
-      const turn = Number.isFinite(Number(agent?.turn)) ? Number(agent?.turn) : 0;
+      // turn lives on the pre-step payload, not on the Agent object.
+      const turnNo = Number.isFinite(Number(turn)) ? Number(turn) : 0;
       for (const hit of hits) {
         try {
           db.prepare(
             'INSERT INTO recall_log (sid, turn, t, memory_id, why) VALUES (?, ?, ?, ?, ?)',
           ).run(
             sid,
-            turn,
+            turnNo,
             Date.now(),
             hit.source === 'memory' ? hit.id : null,
             hit.why ?? '',
@@ -157,11 +172,23 @@ export function apply(ctx) {
           log(`recall log failed: ${error?.message ?? error}`);
         }
       }
+      // A hit that was actually injected counts as "used": without this,
+      // forgetSweep would demote a memory that is read every day after 30 days.
+      try {
+        const ids = hits.filter((hit) => hit.source === 'memory').map((hit) => hit.id);
+        if (ids.length > 0) {
+          db.prepare(
+            `UPDATE memories SET last_used = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
+          ).run(Date.now(), ...ids);
+        }
+      } catch (error) {
+        log(`last_used failed: ${error?.message ?? error}`);
+      }
       // M3 影子：算「如果替换会少给多少、补多少」，只记账，不改 messages。
       try {
         const plan = shadowPlan({ messages, hits, query });
         plan.hintChars = text.length;
-        recordShadow(db, { sid, turn, ...plan });
+        recordShadow(db, { sid, turn: turnNo, ...plan });
         if (plan.replaced > 0) log(`shadow replaced=${plan.replaced} saved=${plan.replacedChars} added=${plan.added}`);
       } catch (error) {
         log(`shadow failed: ${error?.message ?? error}`);
@@ -214,6 +241,7 @@ export function apply(ctx) {
   }
 
   ctx.effect(() => () => {
+    disposed = true;
     if (timer) clearInterval(timer);
     timer = null;
     try {

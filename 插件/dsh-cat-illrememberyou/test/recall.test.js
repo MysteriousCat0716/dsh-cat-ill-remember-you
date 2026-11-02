@@ -84,6 +84,14 @@ test('retrieve: L3 falls back to raw turns only with a referent', () => {
   assert.ok(hits[0].why.includes('产出/插件/foo.js'));
 });
 
+test('retrieve: L3 does not inject the current message as a past turn', () => {
+  const db = openStore(':memory:');
+  const text = '刚才那个 lib/recall.js 的缓存问题，现在怎么办？';
+  insertTurn(db, { sid: 's1', seq: 1, role: 'user', text, t: 500 });
+  const hits = retrieve(db, { text, recent: [], now: 1000 });
+  assert.equal(hits.filter((hit) => hit.source === 'turn').length, 0);
+});
+
 test('retrieve: caps hits at two', () => {
   const db = openStore(':memory:');
   const stmt = db.prepare(

@@ -182,17 +182,23 @@ export function retrieve(db, { text, recent = [], now = Date.now() } = {}) {
         )
         .all(...values, now - TURN_WINDOW_MS);
       for (const row of rows) {
+        const text = String(row.text ?? '');
+        // The current message is already in `turns`; pasting it back as "what
+        // we said before" is not a memory. Skip it and anything this round
+        // already has in context.
+        if (text === query.text) continue;
         const item = {
           source: 'turn',
           id: row.id,
           kind: row.role,
-          summary: String(row.text ?? '').slice(0, 120),
-          text: row.text,
+          summary: text.slice(0, 120),
+          text,
           t: Number(row.t ?? 0),
-          anchors: anchorsOf(row.text),
-          entities: entitiesOf(row.text),
+          anchors: anchorsOf(text),
+          entities: entitiesOf(text),
           why: '',
         };
+        if (inKnown(item, known)) continue;
         item.why = whyOf(item, query);
         push(item);
       }

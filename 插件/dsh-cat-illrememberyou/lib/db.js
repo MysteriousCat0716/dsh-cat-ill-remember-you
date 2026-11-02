@@ -144,6 +144,9 @@ export function openStore(file = DEFAULT_DB_FILE) {
   const db = new DatabaseSync(file);
   try {
     db.exec('PRAGMA foreign_keys = ON');
+    // web and headless can point at the same file; wait briefly instead of
+    // failing with SQLITE_BUSY on a refine/forget transaction.
+    db.exec('PRAGMA busy_timeout = 3000');
     if (file !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
     db.exec(SCHEMA);
     ensureColumn(db, 'turns', 'origin', "TEXT NOT NULL DEFAULT 'chat'");

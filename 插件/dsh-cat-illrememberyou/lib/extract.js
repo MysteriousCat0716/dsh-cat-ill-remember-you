@@ -39,6 +39,12 @@ export function groupTurns(turns) {
   const blocks = [];
   let current = null;
   for (const turn of turns) {
+    // Sessions interleave in one append-only table; never merge two sids into
+    // one question/answer block.
+    if (current && current.turns[0].sid !== turn.sid) {
+      blocks.push(current);
+      current = null;
+    }
     if (turn.role === 'user') {
       if (current) blocks.push(current);
       current = { turns: [turn] };
@@ -159,7 +165,10 @@ function digestOf(userText, botText) {
 
 export function candidateOf(block) {
   const user = block.turns.find((t) => t.role === 'user');
-  const assistant = block.turns.find((t) => t.role === 'assistant');
+  // The conclusion usually sits in the last step of a multi-step reply; the
+  // first assistant message is often just "I'll take a look".
+  const assistants = block.turns.filter((t) => t.role === 'assistant');
+  const assistant = assistants.length > 0 ? assistants[assistants.length - 1] : undefined;
   const allText = blockText(block);
   if (allText.length < 12) return null;
 
@@ -228,31 +237,53 @@ function insertMemory(db, item) {
  * @returns {{turns:number, memories:number}}
  */
 export function refine(db, opts = {}) {
-  const turns = pendingTurns(db, opts.limit ?? MAX_TURNS);
+  const limit = opts.limit ?? MAX_TURNS;
+  const all = pendingTurns(db, limit);
+  if (all.length === 0) return { turns: 0, memories: 0 };
+
+  // Do not cut a question from its answers at the window edge: a trailing lone
+  // user turn is left for the next pass instead of becoming an answerless memory.
+  let turns = all;
+  if (all.length === limit && all[all.length - 1].role === 'user') {
+    turns = all.slice(0, -1);
+  }
   if (turns.length === 0) return { turns: 0, memories: 0 };
 
   const blocks = groupTurns(turns);
   let memories = 0;
   const consumed = [];
-  for (const block of blocks) {
-    const candidate = candidateOf(block);
-    if (!candidate) continue;
-    const id = insertMemory(db, candidate);
-    if (id) {
-      upsertEntities(db, candidate.entities, candidate.t);
-      memories += 1;
+  // insertMemory + markConsumed must commit together; otherwise a crash or a
+  // SQLITE_BUSY after the INSERTs replays the same turns into duplicate rows.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const block of blocks) {
+      const candidate = candidateOf(block);
+      if (!candidate) continue;
+      const id = insertMemory(db, candidate);
+      if (id) {
+        upsertEntities(db, candidate.entities, candidate.t);
+        memories += 1;
+      }
+      consumed.push(...candidate.ids);
     }
-    consumed.push(...candidate.ids);
+    // Consume only the turns that produced a memory. A block that matched no
+    // candidate stays in the raw store, merely scanned: a later rule set or model
+    // must still be able to read what the current one skipped.
+    markConsumed(db, [...new Set(consumed)]);
+    const consumedSet = new Set(consumed);
+    markScanned(
+      db,
+      turns.map((t) => t.id).filter((id) => !consumedSet.has(id)),
+    );
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* transaction may already be closed */
+    }
+    throw error;
   }
-  // Consume only the turns that produced a memory. A block that matched no
-  // candidate stays in the raw store, merely scanned: a later rule set or model
-  // must still be able to read what the current one skipped.
-  markConsumed(db, [...new Set(consumed)]);
-  const consumedSet = new Set(consumed);
-  markScanned(
-    db,
-    turns.map((t) => t.id).filter((id) => !consumedSet.has(id)),
-  );
   return { turns: turns.length, memories };
 }
 

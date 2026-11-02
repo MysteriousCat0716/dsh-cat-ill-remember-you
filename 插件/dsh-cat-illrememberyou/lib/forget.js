@@ -48,24 +48,37 @@ export function forgetSweep(db, opts = {}) {
 
   let dormant = 0;
   let cold = 0;
-  for (const row of rows) {
-    if (STICKY_KINDS.has(row.kind)) continue;
-    const age = now - lastTouched(row);
-    if (row.tier === TIER_ACTIVE && age >= dormantAfterMs) {
-      markDormant.run(row.id);
-      log.run(row.id, now, `active ${Math.floor(age / DAY_MS)}d unused`, TIER_ACTIVE, TIER_DORMANT);
-      dormant += 1;
-    } else if (row.tier === TIER_DORMANT && age >= dormantAfterMs + coldAfterMs) {
-      markCold.run(row.id);
-      log.run(
-        row.id,
-        now,
-        `dormant ${Math.floor(age / DAY_MS)}d unused`,
-        TIER_DORMANT,
-        TIER_COLD,
-      );
-      cold += 1;
+  // The tier change and its forget_log line must commit together: a failure
+  // halfway would leave a row demoted with no audit trail.
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const row of rows) {
+      if (STICKY_KINDS.has(row.kind)) continue;
+      const age = now - lastTouched(row);
+      if (row.tier === TIER_ACTIVE && age >= dormantAfterMs) {
+        markDormant.run(row.id);
+        log.run(row.id, now, `active ${Math.floor(age / DAY_MS)}d unused`, TIER_ACTIVE, TIER_DORMANT);
+        dormant += 1;
+      } else if (row.tier === TIER_DORMANT && age >= dormantAfterMs + coldAfterMs) {
+        markCold.run(row.id);
+        log.run(
+          row.id,
+          now,
+          `dormant ${Math.floor(age / DAY_MS)}d unused`,
+          TIER_DORMANT,
+          TIER_COLD,
+        );
+        cold += 1;
+      }
     }
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* transaction may already be closed */
+    }
+    throw error;
   }
 
   return { demoted: dormant + cold, dormant, cold };

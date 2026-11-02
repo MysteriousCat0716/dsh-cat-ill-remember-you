@@ -27,6 +27,35 @@ test('groupTurns: one block per user message, assistant rides along', () => {
   assert.deepEqual(blocks[1].turns.map((t) => t.id), [4]);
 });
 
+test('groupTurns: two interleaved sessions never share a block', () => {
+  const blocks = groupTurns([
+    turn({ id: 1, sid: 'main', seq: 1, role: 'user', text: '我更喜欢中文' }),
+    turn({ id: 2, sid: 'sub', seq: 1, role: 'user', text: '帮我查 lib/recall.js' }),
+    turn({ id: 3, sid: 'main', seq: 2, role: 'assistant', text: '好，以后都用中文' }),
+  ]);
+  for (const block of blocks) {
+    assert.equal(new Set(block.turns.map((t) => t.sid)).size, 1);
+  }
+});
+
+test('candidateOf: the last assistant step carries the conclusion', () => {
+  const block = {
+    turns: [
+      turn({ id: 1, sid: 's1', seq: 1, role: 'user', text: '缓存这块要怎么改？' }),
+      turn({ id: 2, sid: 's1', seq: 2, role: 'assistant', text: '我先看一下实现。' }),
+      turn({
+        id: 3,
+        sid: 's1',
+        seq: 3,
+        role: 'assistant',
+        text: '结论：缓存要用 LRU，旧条目按时间淘汰。',
+      }),
+    ],
+  };
+  const candidate = candidateOf(block);
+  assert.ok(candidate.summary.includes('LRU'));
+});
+
 test('groupTurns: leading assistant does not get dropped', () => {
   const blocks = groupTurns([
     turn({ id: 7, seq: 7, role: 'assistant', text: '中段接入' }),
