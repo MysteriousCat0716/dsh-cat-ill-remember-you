@@ -30,6 +30,14 @@ export const MAX_REPLACE_CHARS = 1500;
 // 同一会话两次真替换之间的冷却。每轮都改前缀会让缓存每轮失效。
 export const REPLACE_COOLDOWN_MS = 3 * 60 * 1000;
 
+// 滚动替换（P1）：不再等窗口满一次换掉 40%，而是每次只动最早 STEP 条，
+// 最近 KEEP_TAIL 条永远是原文。条数或字数任一超线就跑。
+export const ROLL_KEEP_TAIL = 6;
+export const ROLL_STEP = 4;
+export const ROLL_SOFT_BUDGET = 6000;
+// 每次只动 4 条，冷却可以比「一次换一大段」短。
+export const ROLL_COOLDOWN_MS = 60 * 1000;
+
 /** 读整数环境变量；空值或非法值回落到默认。 */
 function envInt(name, fallback) {
   const raw = process.env[name];
@@ -355,14 +363,30 @@ export function planShadowV2(
     keep = null,
     window = envInt('DSH_MEMORY_CORE_SHADOW_WINDOW', DEFAULT_WINDOW),
     now = Date.now(),
+    roll = process.env.DSH_MEMORY_CORE_ROLL !== '0',
   } = {},
 ) {
   const entries = surfaceMessages(session);
   if (entries.length <= MIN_ENTRIES) return null;
-  const keepCount = resolveKeep(entries.length, keep);
-  const { replaced: older, kept } = splitKeep(entries, keepCount);
-  const cap = Math.max(1, Math.floor(Number(window) || DEFAULT_WINDOW));
-  const replaced = older.slice(-cap);
+  let replaced;
+  let kept;
+  if (roll) {
+    // 滚动模式：只动最早 STEP 条，最近 KEEP_TAIL 条永远是原文。
+    if (entries.length <= ROLL_KEEP_TAIL) return null;
+    const totalChars = entries.reduce((total, entry) => total + entry.text.length, 0);
+    const overCount = entries.length > ROLL_KEEP_TAIL + ROLL_STEP;
+    if (!overCount && totalChars <= ROLL_SOFT_BUDGET) return null;
+    const early = entries.slice(0, entries.length - ROLL_KEEP_TAIL);
+    replaced = early.slice(0, ROLL_STEP);
+    kept = [...early.slice(ROLL_STEP), ...entries.slice(entries.length - ROLL_KEEP_TAIL)];
+  } else {
+    // 旧逻辑兜底：按比例保留，一次换掉更早的一段。
+    const keepCount = resolveKeep(entries.length, keep);
+    const split = splitKeep(entries, keepCount);
+    const cap = Math.max(1, Math.floor(Number(window) || DEFAULT_WINDOW));
+    replaced = split.replaced.slice(-cap);
+    kept = split.kept;
+  }
   if (replaced.length === 0) return null;
   const sid = String(session?.id ?? session?.sessionId ?? 'unknown');
   const cwd = typeof session?.header?.cwd === 'string' ? session.header.cwd : '';
@@ -390,7 +414,8 @@ export function planShadowV2(
   const recent = db
     .prepare('SELECT t FROM shadow_v2 WHERE sid = ? AND applied = 1 ORDER BY id DESC LIMIT 1')
     .get(sid);
-  if (recent && now - recent.t < REPLACE_COOLDOWN_MS) return null;
+  const cooldown = roll ? ROLL_COOLDOWN_MS : REPLACE_COOLDOWN_MS;
+  if (recent && now - recent.t < cooldown) return null;
   const row = {
     sid,
     turn: 0,

@@ -17,6 +17,8 @@
 
 替换的区间按**位置**取（`surface.nodes.indexOf(startSeq)` 到 `indexOf(endSeq)`），不能按 seq 值过滤：早先替换块的 seq 比它所在的位置大，会夹在后续区间中间；值过滤会漏掉它，宿主按位置算 `shadowedSeqs`，直接报 `missing`。同一区间只记一次账，但白名单内上次 `applied=0`（append 失败）时允许下一轮重试；冷却期内不记账也不替换。
 
+替换已改成**滚动**（0.4.0）：不再等窗口满一次换掉 40%，而是每次只动 surface 上最早 `STEP=4` 条，最近 `KEEP_TAIL=6` 条永远是原文；条数 > 10 或原文总字数 > 6000 任一超线就跑，冷却 60 秒。旧的比例逻辑保留为兜底，`DSH_MEMORY_CORE_ROLL=0` 可退回。替换块不进 `surfaceMessages`（`source.kind` 是 `context-replacement`，被跳过），所以不会被二次压缩——下一次替换永远从原文重算。
+
 ## 数据
 
 默认 `~/.dsh/memory/core.db`，`DSH_MEMORY_CORE_DB` 可覆盖。
@@ -31,7 +33,7 @@
 node --test test/
 ```
 
-116 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。
+118 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。
 
 ## 环境变量
 
@@ -44,11 +46,12 @@ node --test test/
 | `DSH_MEMORY_CORE_OLLAMA` | `http://127.0.0.1:11434` | Ollama 地址 |
 | `DSH_MEMORY_CORE_EMBED_BATCH` | `16` | 每批补多少条向量 |
 | `DSH_MEMORY_CORE_KEEP` | `10` | 影子/替换时保留多少条原文 |
-| `DSH_MEMORY_CORE_SHADOW_WINDOW` | `40` | 每次被换窗口最多取多少条 |
+| `DSH_MEMORY_CORE_SHADOW_WINDOW` | `40` | 旧模式每次被换窗口最多取多少条 |
+| `DSH_MEMORY_CORE_ROLL` | `1` | 滚动替换；`0` 退回按比例一次换一段 |
 | `DSH_MEMORY_CORE_REPLACE` | `0` | 真替换开关；`1` 才写 `surfaceOp.replace` |
 
 ## 已知缺口
 
 - 向量已生成（1024 维），但还没接进取回；纯语义指代（「就那个讲压缩的」）仍可能捞不回。
-- 影子样本不足 50 轮，替换没开。
+- 影子样本不足 50 轮；目前只有测试会话在白名单，主会话还没开真替换。
 - 提炼是规则版，摘要质量一般；接模型只改 `refine()` 内部。

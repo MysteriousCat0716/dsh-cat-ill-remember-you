@@ -117,14 +117,10 @@ test('planShadowV2: 消息少于 4 条时不记账', () => {
   db.close();
 });
 
-test('planShadowV2: 短会话（6 条消息）也记账', () => {
+test('planShadowV2: 6 条短会话不换（最近 6 条是保护线）', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('短句', 6));
-  const plan = planShadowV2(session, db, { now: 1 });
-  assert.ok(plan);
-  // 6 条 × 0.4 = 2.4 → 取 MIN_KEEP 4
-  assert.equal(plan.kept, 4);
-  assert.ok(plan.rangeEnd >= plan.rangeStart);
+  assert.equal(planShadowV2(session, db, { now: 1 }), null);
   db.close();
 });
 
@@ -161,10 +157,10 @@ test('surfaceMessages: 跳过运行时注入与工具消息', () => {
   );
 });
 
-test('planShadowV2: 只取最近 window 条老消息', () => {
+test('planShadowV2: 只取最近 window 条老消息（旧模式兜底）', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 80), 'sid-w');
-  const plan = planShadowV2(session, db, { keep: 10, window: 20, now: 1 });
+  const plan = planShadowV2(session, db, { keep: 10, window: 20, now: 1, roll: false });
   assert.ok(plan);
   assert.equal(plan.rangeStart, 51);
   assert.equal(plan.rangeEnd, 70);
@@ -172,13 +168,41 @@ test('planShadowV2: 只取最近 window 条老消息', () => {
   db.close();
 });
 
-test('planShadowV2: keep 可由 DSH_MEMORY_CORE_KEEP 覆盖', () => {
+test('planShadowV2: 滚动模式只换最早 4 条，最近 6 条原文不动', () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 12), 'sid-roll');
+  const plan = planShadowV2(session, db, { now: 1 });
+  assert.ok(plan);
+  assert.equal(plan.rangeStart, 1);
+  assert.equal(plan.rangeEnd, 4);
+  // 未换的早段 2 条 + 最近 6 条
+  assert.equal(plan.kept, 8);
+  db.close();
+});
+
+test('planShadowV2: 字数超预算时条数不够也换（只换得动最早那段）', () => {
+  const db = openStore(':memory:');
+  const long = Array.from({ length: 8 }, (_, i) => [
+    i + 1,
+    i % 2 === 0 ? 'user' : 'assistant',
+    `${'长'.repeat(900)} 第 ${i + 1} 条`,
+  ]);
+  const session = fakeSession(long, 'sid-chars');
+  const plan = planShadowV2(session, db, { now: 1 });
+  assert.ok(plan);
+  assert.equal(plan.rangeStart, 1);
+  assert.equal(plan.rangeEnd, 2);
+  assert.equal(plan.kept, 6);
+  db.close();
+});
+
+test('planShadowV2: keep 可由 DSH_MEMORY_CORE_KEEP 覆盖（旧模式兜底）', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 20), 'sid-env');
   const previous = process.env.DSH_MEMORY_CORE_KEEP;
   process.env.DSH_MEMORY_CORE_KEEP = '5';
   try {
-    const plan = planShadowV2(session, db, { now: 1 });
+    const plan = planShadowV2(session, db, { now: 1, roll: false });
     assert.ok(plan);
     assert.equal(plan.kept, 5);
   } finally {
@@ -188,13 +212,13 @@ test('planShadowV2: keep 可由 DSH_MEMORY_CORE_KEEP 覆盖', () => {
   }
 });
 
-test('planShadowV2: 环境变量非法时回落到动态 keep', () => {
+test('planShadowV2: 环境变量非法时回落到动态 keep（旧模式兜底）', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 20), 'sid-env-bad');
   const previous = process.env.DSH_MEMORY_CORE_KEEP;
   process.env.DSH_MEMORY_CORE_KEEP = 'nope';
   try {
-    const plan = planShadowV2(session, db, { now: 1 });
+    const plan = planShadowV2(session, db, { now: 1, roll: false });
     assert.ok(plan);
     // 20 条 × 0.4 = 8，落在 [MIN_KEEP, DEFAULT_KEEP] 之间
     assert.equal(plan.kept, 8);
