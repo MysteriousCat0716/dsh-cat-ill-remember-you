@@ -45,13 +45,15 @@ node --test test/
 | `DSH_MEMORY_CORE_EMBED_MODEL` | `qwen3-embedding:0.6b` | 向量模型 |
 | `DSH_MEMORY_CORE_OLLAMA` | `http://127.0.0.1:11434` | Ollama 地址 |
 | `DSH_MEMORY_CORE_EMBED_BATCH` | `16` | 每批补多少条向量 |
-| `DSH_MEMORY_CORE_KEEP` | `10` | 影子/替换时保留多少条原文 |
+| `DSH_MEMORY_CORE_KEEP` | `10` | 旧模式保留多少条原文（滚动模式按 `KEEP_TAIL` 固定 6） |
 | `DSH_MEMORY_CORE_SHADOW_WINDOW` | `40` | 旧模式每次被换窗口最多取多少条 |
 | `DSH_MEMORY_CORE_ROLL` | `1` | 滚动替换；`0` 退回按比例一次换一段 |
-| `DSH_MEMORY_CORE_REPLACE` | `0` | 真替换开关；`1` 才写 `surfaceOp.replace` |
+
+真替换的开关不是环境变量，是白名单文件 `~/.dsh/cache/replace-sessions.txt`：每行一个 session id，`*` 表示全部；文件不存在或名单为空 = 全关。`tools/allow-session.mjs` 可以列最近会话、把某个 sid 写进名单。
 
 ## 已知缺口
 
 - 向量已生成（1024 维），但还没接进取回；纯语义指代（「就那个讲压缩的」）仍可能捞不回。
-- 影子样本不足 50 轮；目前只有测试会话在白名单，主会话还没开真替换。
+- 真替换只在白名单会话里验证过；主会话还没开，几千字的大窗口路径也还没实跑。
+- 白名单外完全不记账（2026-11-03 02:33 起），所以这些会话没有替换账本可查。
 - 提炼是规则版，摘要质量一般；接模型只改 `refine()` 内部。
