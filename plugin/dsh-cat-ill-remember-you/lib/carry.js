@@ -1,21 +1,23 @@
 /**
  * M5 · 跨会话接续
  *
- * 新会话第一轮，把「同 workspace 的上一个会话最后那条缓存」接进来。
- * 数据源只有 shadow_v2 里真替换过（applied=1）的行：那是模型实际读过的
- * 接续缓存，不是我事后猜的压缩文本。
+ * 新会话第一轮，把「同 workspace 的上一个会话结尾」接进来。
+ * 优先取上一个会话的**最后几条原文**（dsh 自己落盘的 session.v4.jsonl.zstd，
+ * append-only，被替换掉的原文也在），原文读不到时才退回 shadow_v2 里
+ * 真替换过（applied=1）的缓存摘要——摘要永远是退路，不是正路。
  *
  * 三条边界：
  *   1. 只认同 cwd；cwd 为空的历史行不参与，宁可接不上也不串项目。
- *   2. 不取当前会话自己的缓存。
+ *   2. 不取当前会话自己（文件 mtime 可能最新）。
  *   3. 一个会话只注入一次：判据是**会话历史**里有没有 assistant 回复，
  *      不是 pre-step 的 messages——那个只是本轮 claim 到的新消息。
  */
 
+import { recentSessionOriginals } from './originals.js';
 import { surfaceMessages } from './shadow-v2.js';
 
 export const LAST_SESSION_MARK = '[上次会话结尾]';
-export const LAST_SESSION_MAX_CHARS = 800;
+export const LAST_SESSION_MAX_CHARS = 1600;
 
 /** @param {string} text @param {number} maxChars */
 export function clipText(text, maxChars = LAST_SESSION_MAX_CHARS) {
@@ -69,8 +71,38 @@ export function renderCarry(row) {
   return `${head}\n${row?.text ?? ''}`;
 }
 
-/** 这条会话历史里是否已经注入过接续缓存。 */
-export function hasCarry(messages) {
+/**
+ * 渲染「上一个会话的最后几条原文」。从最近一条往回填，放不下的整条丢掉，
+ * 所以留下的总是贴着结尾的那几轮。
+ * @param {{sid:string, mtime:number, messages:Array<{role:string,text:string}>}} tail
+ */
+export function renderTailCarry(tail, maxChars = LAST_SESSION_MAX_CHARS) {
+  const messages = Array.isArray(tail?.messages) ? tail.messages : [];
+  if (messages.length === 0) return '';
+  const when = stamp(tail?.mtime);
+  const headFor = (count) =>
+    `${LAST_SESSION_MARK} 上一个会话的最后 ${count} 条原文` +
+    (when ? `（${when}）` : '') +
+    '，不是当前这段对话。原文在本地文件里，要查用 read / 取回。';
+  const head = headFor(messages.length);
+  const limit = Math.max(120, maxChars - head.length - 1);
+  const picked = [];
+  let size = 0;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const entry = messages[index];
+    const text = String(entry?.text ?? '').replace(/\s+/g, ' ').trim();
+    if (text === '') continue;
+    const line = `- ${entry.role === 'user' ? '他说' : '我说'}: ${text}`;
+    if (picked.length > 0 && size + line.length + 1 > limit) break;
+    picked.push(clipText(line, limit));
+    size += line.length + 1;
+  }
+  picked.reverse();
+  const finalHead = picked.length === messages.length ? head : headFor(picked.length);
+  return clipText(`${finalHead}\n${picked.join('\n')}`, maxChars);
+}
+
+/** 这条会话历史里是否已经注入过接续缓存。 */export function hasCarry(messages) {
   if (!Array.isArray(messages)) return false;
   return messages.some((message) => hasCarryText(message));
 }
@@ -133,7 +165,7 @@ export function hasAssistantTurn(session) {
  */
 export function planCarry(
   db,
-  { cwd, sid, session, messages = [], maxChars = LAST_SESSION_MAX_CHARS } = {},
+  { cwd, sid, session, messages = [], maxChars = LAST_SESSION_MAX_CHARS, sessionsRoot } = {},
 ) {
   // 同一轮重放时兜底：本轮消息里已经有标记。
   if (hasCarry(messages)) return null;
@@ -141,6 +173,16 @@ export function planCarry(
   if (!session) return null;
   if (hasCarryInSurface(session)) return null;
   if (hasAssistantTurn(session)) return null;
+  if (typeof cwd !== 'string' || cwd.trim() === '') return null;
+  // 正路：上一个会话的最后几条原文。
+  let tail = null;
+  try {
+    tail = recentSessionOriginals({ cwd, excludeSid: sid, limit: 6, sessionsRoot });
+  } catch {
+    tail = null;
+  }
+  if (tail && tail.messages.length > 0) return renderTailCarry(tail, maxChars);
+  // 退路：原文文件读不到（旧会话已清理、盘上换过位置）时才用摘要缓存。
   const row = lastSessionCache(db, { cwd, sid, maxChars });
   return row ? renderCarry(row) : null;
 }

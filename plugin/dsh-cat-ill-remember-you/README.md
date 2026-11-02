@@ -13,7 +13,7 @@
 - **M2 三级取回**：L1 最近 3 条 / L2 memories / L3 turns，闸门要求每条写出 why，注入 1–2 条、≤600 字，落 `recall_log`。另有分区：persona（偏好 + 关系类决定）常驻 ≤8 条/300 字，people 与 tools 各按需取 1 条，都算进 2 条/600 字预算。
 - **M3 影子**：每轮算「如果替换会删掉什么、补上什么」，只写 `shadow_log`，不动真实上下文。
 - **M4 遗忘**：每日一次，按取回/验证时间降 tier，只标不删，落 `forget_log`。保留期分三档：`permanent` 永不降级（偏好）、`ephemeral` 7 天没碰沉 dormant（情绪）、`auto` 走默认曲线（30/90 天）。
-- **M5 跨会话接续**：新会话第一轮，注入同 workspace 上一个会话的最后那条真替换缓存（`shadow_v2` 里 `applied=1`、同 `cwd`、非当前会话），标 `[上次会话结尾]`，≤800 字，每会话一次。跨 workspace 不串；`cwd` 为空的历史行不参与。「是不是新会话」按**会话历史**判断——`session.surface` 里有没有 assistant 回复。不能用 pre-step 的 `messages`：那是 inbox 里 claim 到的本轮新消息（`dsh-agent-loop/lib/index.js:909-912` `messages: claimed`），拿它判 assistant 永远为假，主会话每轮都会被注入（2026-11-03 01:31 实机踩到）。也不能用 `turn`——那是进程内轮次（`dsh-agent-loop/lib/index.js:943` `const turn = phase.turn + 1`），旧会话恢复后也从 1 开始。
+- **M5 跨会话接续**：新会话第一轮，注入同 workspace 上一个会话的最后几条**原文**（`lib/originals.js` 读 `~/.dsh/sessions/<workspace>/<sid>/session.v4.jsonl.zstd`，append-only，被替换掉的原文也在；跳过子代理会话与空会话），标 `[上次会话结尾]`，≤1600 字，每会话一次。原文读不到时才退回 `shadow_v2` 里 `applied=1`、同 `cwd`、非当前会话的缓存摘要——摘要永远是退路。跨 workspace 不串；`cwd` 为空的历史行不参与。「是不是新会话」按**会话历史**判断——`session.surface` 里有没有 assistant 回复。不能用 pre-step 的 `messages`：那是 inbox 里 claim 到的本轮新消息（`dsh-agent-loop/lib/index.js:909-912` `messages: claimed`），拿它判 assistant 永远为假，主会话每轮都会被注入（2026-11-03 01:31 实机踩到）。也不能用 `turn`——那是进程内轮次（`dsh-agent-loop/lib/index.js:943` `const turn = phase.turn + 1`），旧会话恢复后也从 1 开始。
 
 ## 数据
 
@@ -29,7 +29,7 @@
 node --test test/
 ```
 
-107 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。
+114 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。
 
 ## 环境变量
 
