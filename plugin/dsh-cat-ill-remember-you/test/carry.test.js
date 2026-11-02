@@ -219,8 +219,8 @@ test('planCarry: turns 里的会话全接过之后，不再解压会话文件', 
       mkdirSync(dirname(file), { recursive: true });
       writeFileSync(file, 'not a zstd stream');
       db.prepare(
-        'INSERT OR IGNORE INTO turns (sid, seq, role, origin, text, t) VALUES (?, ?, ?, ?, ?, ?)',
-      ).run('other', 1, 'user', 'chat', '别处说的一句', 9_000_000_000_000);
+        'INSERT OR IGNORE INTO turns (sid, seq, role, origin, cwd, text, t) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      ).run('other', 1, 'user', 'chat', '/w', '别处说的一句', 9_000_000_000_000);
 
       const first = planCarry(db, { cwd: '/w', sid: 'me', messages: [], sessionsRoot: root });
       assert.ok(first?.includes('别处说的一句'));
@@ -237,4 +237,29 @@ test('planCarry: turns 里的会话全接过之后，不再解压会话文件', 
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }));
+
+test('planCarry: 不同 workspace 的 turns 不互相接', () =>
+  withStore((db) => {
+    const insert = db.prepare(
+      'INSERT OR IGNORE INTO turns (sid, seq, role, origin, cwd, text, t) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    );
+    insert.run('other-ws', 1, 'user', 'chat', '/other', '别的项目说的话', 9_000_000_000_000);
+    insert.run('same-ws', 1, 'user', 'chat', '/w', '同一个项目的话', 9_000_000_000_001);
+
+    const text = planCarry(db, { cwd: '/w', sid: 'me', messages: [], sessionsRoot: '/nonexistent' });
+    assert.ok(text?.includes('同一个项目的话'));
+    assert.ok(!text?.includes('别的项目说的话'));
+  }));
+
+test('planCarry: 空 cwd 的旧 turns 不参与接续', () =>
+  withStore((db) => {
+    db.prepare(
+      'INSERT OR IGNORE INTO turns (sid, seq, role, origin, cwd, text, t) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).run('legacy', 1, 'user', 'chat', '', '没归属的旧话', 9_000_000_000_000);
+
+    assert.equal(
+      planCarry(db, { cwd: '/w', sid: 'me', messages: [], sessionsRoot: '/nonexistent' }),
+      null,
+    );
   }));

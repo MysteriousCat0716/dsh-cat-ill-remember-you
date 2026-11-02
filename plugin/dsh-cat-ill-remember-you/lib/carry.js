@@ -226,21 +226,24 @@ export const MAX_CARRY_SESSIONS = 4;
  * 不再每轮解压几个会话文件——快速在多个会话间切换时，只接一个会被别的会话顶掉。
  *
  * @param {import('node:sqlite').DatabaseSync} db
- * @param {{sid?:string, limit?:number, maxSessions?:number}} options
+ * @param {{sid?:string, cwd?:string, limit?:number, maxSessions?:number}} options
  * @returns {Array<{sid:string, mtime:number, messages:Array<{seq:number,role:string,text:string}>}>}
  */
-export function recentTurnsBySession(db, { sid, limit = 6, maxSessions = MAX_CARRY_SESSIONS } = {}) {
+export function recentTurnsBySession(db, { sid, cwd, limit = 6, maxSessions = MAX_CARRY_SESSIONS } = {}) {
   if (!db) return [];
+  // 归属未知（空 cwd）的 turns 不参与：旧库里没有 workspace 维度的行宁可接不上，
+  // 也不把另一个项目的尾巴接进当前会话。
+  if (!cwd) return [];
   try {
     const rows = db
       .prepare(
         `SELECT sid, seq, role, text, t FROM (
            SELECT sid, seq, role, text, t,
                   ROW_NUMBER() OVER (PARTITION BY sid ORDER BY seq DESC) AS rn
-           FROM turns WHERE sid != ? AND length(text) > 0
+           FROM turns WHERE sid != ? AND length(text) > 0 AND cwd = ?
          ) WHERE rn <= ? ORDER BY sid, seq`,
       )
-      .all(String(sid ?? ''), Math.max(1, limit));
+      .all(String(sid ?? ''), String(cwd), Math.max(1, limit));
     const out = [];
     let current = null;
     for (const row of rows) {
@@ -314,7 +317,7 @@ export function planCarry(
   // 正路：turns 表里所有其他会话的最近几条，各会话独立去重。
   const tails = [];
   let sawAnyTurn = false;
-  for (const tail of recentTurnsBySession(db, { sid })) {
+  for (const tail of recentTurnsBySession(db, { sid, cwd })) {
     sawAnyTurn = true;
     const lastSeq = Number(tail.messages[tail.messages.length - 1]?.seq) || 0;
     const mine = lastCarry(db, sid, tail.sid);

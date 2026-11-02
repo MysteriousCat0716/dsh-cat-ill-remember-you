@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS turns (
   seq       INTEGER NOT NULL,
   role      TEXT    NOT NULL,
   origin    TEXT    NOT NULL DEFAULT 'chat',
+  cwd       TEXT    NOT NULL DEFAULT '',
   text      TEXT    NOT NULL,
   t         INTEGER NOT NULL,
   consumed  INTEGER NOT NULL DEFAULT 0,
@@ -184,6 +185,7 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'memories', 'subject', "TEXT NOT NULL DEFAULT 'user'");
     ensureColumn(db, 'memories', 'retention', "TEXT NOT NULL DEFAULT 'auto'");
     ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
+    ensureColumn(db, 'turns', 'cwd', "TEXT NOT NULL DEFAULT ''");
     ensureColumn(db, 'shadow_v2', 'applied', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'shadow_v2', 'cwd', "TEXT NOT NULL DEFAULT ''");
     ensureColumn(db, 'carry_log', 'from_t', 'INTEGER NOT NULL DEFAULT 0');
@@ -203,13 +205,15 @@ export function openStore(file = DEFAULT_DB_FILE) {
  * `origin`: 'chat' for the owner typing in the desktop/web chat, 'im' for a
  * connected IM channel (QQ/Feishu/...), 'unknown' when the source carries no
  * channel hint.
+ * `cwd`: the workspace the session belongs to. Carry 只接同一个 workspace 的
+ * 会话尾巴；空值表示「归属未知」，不参与跨会话接续（宁可接不上也不串项目）。
  * @returns {number} rows inserted (0 or 1)
  */
-export function insertTurn(db, { sid, seq, role, text, origin = 'chat', t = Date.now() }) {
+export function insertTurn(db, { sid, seq, role, text, origin = 'chat', cwd = '', t = Date.now() }) {
   const stmt = db.prepare(
-    'INSERT OR IGNORE INTO turns (sid, seq, role, origin, text, t) VALUES (?, ?, ?, ?, ?, ?)',
+    'INSERT OR IGNORE INTO turns (sid, seq, role, origin, cwd, text, t) VALUES (?, ?, ?, ?, ?, ?, ?)',
   );
-  const result = stmt.run(sid, seq, role, origin, text, t);
+  const result = stmt.run(sid, seq, role, origin, cwd, text, t);
   return Number(result.changes ?? 0);
 }
 

@@ -10,6 +10,7 @@ import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { planShadowV2 } from './shadow-v2.js';
 import { planCarry, setCarryLogger } from './carry.js';
+import { backfillTurnCwd } from './backfill.js';
 import { forgetSweep } from './forget.js';
 import { embedPending } from './embed.js';
 
@@ -111,6 +112,13 @@ export function apply(ctx) {
     try {
       store = openStore(file);
       log(`store open: ${store.file ?? file ?? 'default'}`);
+      // 旧库的 turns 没有 cwd：按会话文件头补一次，补不上的保持空、不参与接续。
+      try {
+        const filled = backfillTurnCwd(store);
+        if (filled > 0) log(`turn cwd backfill: ${filled} rows`);
+      } catch (error) {
+        log(`turn cwd backfill failed: ${error?.message ?? error}`);
+      }
       return store;
     } catch (error) {
       log(`store unavailable: ${error?.message ?? error}`);

@@ -100,6 +100,7 @@ export function ingestEvent(db, session, event) {
     seq: finiteNumber(event.seq, 0),
     role,
     origin: role === 'user' ? originOf(message) : 'chat',
+    cwd: typeof session?.header?.cwd === 'string' ? session.header.cwd : '',
     text,
     t: finiteNumber(event.time, Date.now()),
   });
