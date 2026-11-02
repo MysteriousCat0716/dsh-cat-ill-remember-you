@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS turns (
   text      TEXT    NOT NULL,
   t         INTEGER NOT NULL,
   consumed  INTEGER NOT NULL DEFAULT 0,
+  scanned_at INTEGER NOT NULL DEFAULT 0,
   UNIQUE (sid, seq, role)
 );
 CREATE INDEX IF NOT EXISTS idx_turns_pending ON turns (consumed, id);
@@ -24,7 +25,7 @@ CREATE TABLE IF NOT EXISTS memories (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   kind       TEXT    NOT NULL DEFAULT 'fact',
   origin     TEXT    NOT NULL DEFAULT 'chat',
-  subject    TEXT    NOT NULL DEFAULT 'both',
+  subject    TEXT    NOT NULL DEFAULT 'user',
   text       TEXT    NOT NULL,
   summary    TEXT    NOT NULL DEFAULT '',
   entities   TEXT    NOT NULL DEFAULT '[]',
@@ -75,6 +76,17 @@ CREATE TABLE IF NOT EXISTS recall_log (
   why       TEXT    NOT NULL DEFAULT '',
   score     REAL,
   used      INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS shadow_log (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  sid            TEXT    NOT NULL,
+  turn           INTEGER NOT NULL,
+  t              INTEGER NOT NULL,
+  replaced       INTEGER NOT NULL DEFAULT 0,
+  replaced_chars INTEGER NOT NULL DEFAULT 0,
+  added          INTEGER NOT NULL DEFAULT 0,
+  hint_chars     INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS forget_log (
@@ -133,7 +145,8 @@ export function openStore(file = DEFAULT_DB_FILE) {
   db.exec(SCHEMA);
   ensureColumn(db, 'turns', 'origin', "TEXT NOT NULL DEFAULT 'chat'");
   ensureColumn(db, 'memories', 'origin', "TEXT NOT NULL DEFAULT 'chat'");
-  ensureColumn(db, 'memories', 'subject', "TEXT NOT NULL DEFAULT 'both'");
+  ensureColumn(db, 'memories', 'subject', "TEXT NOT NULL DEFAULT 'user'");
+  ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
   return db;
 }
 
@@ -152,16 +165,28 @@ export function insertTurn(db, { sid, seq, role, text, origin = 'chat', t = Date
   return Number(result.changes ?? 0);
 }
 
-/** Raw turns not yet distilled, oldest first. */
-export function pendingTurns(db, limit = 40) {
+/** How long a scanned-but-empty turn waits before a rule/model upgrade may re-read it. */
+export const DEFAULT_RESCAN_MS = 24 * 60 * 60 * 1000;
+
+/** Raw turns not yet distilled, oldest first. A turn scanned without producing a
+ * memory is retried after `rescanMs` instead of being consumed for good: a better
+ * rule set or model must be able to read the turns the previous one skipped. */
+export function pendingTurns(db, limit = 40, rescanMs = DEFAULT_RESCAN_MS) {
   return db
-    .prepare('SELECT id, sid, seq, role, origin, text, t FROM turns WHERE consumed = 0 ORDER BY id LIMIT ?')
-    .all(limit);
+    .prepare(
+      'SELECT id, sid, seq, role, origin, text, t FROM turns ' +
+        'WHERE consumed = 0 AND (scanned_at = 0 OR scanned_at < ?) ORDER BY id LIMIT ?',
+    )
+    .all(Date.now() - rescanMs, limit);
 }
 
-/** How many raw turns are still waiting to be distilled. */
-export function pendingCount(db) {
-  const row = db.prepare('SELECT COUNT(*) AS n FROM turns WHERE consumed = 0').get();
+/** How many raw turns are waiting for a distillation pass. */
+export function pendingCount(db, rescanMs = DEFAULT_RESCAN_MS) {
+  const row = db
+    .prepare(
+      'SELECT COUNT(*) AS n FROM turns WHERE consumed = 0 AND (scanned_at = 0 OR scanned_at < ?)',
+    )
+    .get(Date.now() - rescanMs);
   return Number(row?.n ?? 0);
 }
 
@@ -171,5 +196,14 @@ export function markConsumed(db, ids) {
   const stmt = db.prepare('UPDATE turns SET consumed = 1 WHERE id = ?');
   let changed = 0;
   for (const id of ids) changed += Number(stmt.run(id).changes ?? 0);
+  return changed;
+}
+
+/** Mark turns scanned by a run that produced no memory; they stay retryable. */
+export function markScanned(db, ids, t = Date.now()) {
+  if (!Array.isArray(ids) || ids.length === 0) return 0;
+  const stmt = db.prepare('UPDATE turns SET scanned_at = ? WHERE id = ?');
+  let changed = 0;
+  for (const id of ids) changed += Number(stmt.run(t, id).changes ?? 0);
   return changed;
 }

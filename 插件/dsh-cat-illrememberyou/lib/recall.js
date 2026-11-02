@@ -44,6 +44,11 @@ function parseList(raw) {
   }
 }
 
+/** Escape LIKE wildcards so a path or filename is matched literally. */
+export function escapeLike(value) {
+  return String(value).replace(/[\\%_]/g, '\\$&');
+}
+
 /** Pull the scene out of a stored `当时：…｜依据：…` why. */
 function sceneOf(why) {
   const text = String(why ?? '');
@@ -122,7 +127,7 @@ export function retrieve(db, { text, recent = [], now = Date.now() } = {}) {
   const cacheRows = db
     .prepare(
       `SELECT id, kind, summary, text, entities, anchors, t FROM memories
-       WHERE tier != 'deleted' AND origin = 'chat' ORDER BY t DESC LIMIT ?`,
+       WHERE tier = 'active' AND origin = 'chat' ORDER BY t DESC LIMIT ?`,
     )
     .all(CACHE_SIZE);
   for (const row of cacheRows) {
@@ -132,22 +137,24 @@ export function retrieve(db, { text, recent = [], now = Date.now() } = {}) {
     push(item);
   }
 
-  // L2: distilled memories matched by anchor or entity.
+  // L2: distilled memories matched by anchor or entity. Match inside the JSON
+  // array element-wise: a LIKE over the serialized array would treat `%`/`_`
+  // in paths and entity names as wildcards.
   const clauses = [];
   const params = [];
   for (const anchor of query.anchors) {
-    clauses.push('anchors LIKE ?');
-    params.push(`%${JSON.stringify(anchor)}%`);
+    clauses.push('EXISTS (SELECT 1 FROM json_each(memories.anchors) WHERE json_each.value = ?)');
+    params.push(anchor);
   }
   for (const entity of query.entities) {
-    clauses.push('entities LIKE ?');
-    params.push(`%${JSON.stringify(entity)}%`);
+    clauses.push('EXISTS (SELECT 1 FROM json_each(memories.entities) WHERE json_each.value = ?)');
+    params.push(entity);
   }
   if (clauses.length) {
     const rows = db
       .prepare(
         `SELECT id, kind, summary, text, entities, anchors, t FROM memories
-         WHERE tier != 'deleted' AND origin = 'chat' AND (${clauses.join(' OR ')})
+         WHERE tier = 'active' AND origin = 'chat' AND (${clauses.join(' OR ')})
          ORDER BY t DESC LIMIT 8`,
       )
       .all(...params);
@@ -166,8 +173,8 @@ export function retrieve(db, { text, recent = [], now = Date.now() } = {}) {
       ...query.entities.filter((value) => value.length >= 2).slice(0, 3),
     ];
     if (terms.length) {
-      const clauses3 = terms.map(() => 'text LIKE ?').join(' OR ');
-      const values = terms.map((term) => `%${term}%`);
+      const clauses3 = terms.map(() => "text LIKE ? ESCAPE '\\'").join(' OR ');
+      const values = terms.map((term) => `%${escapeLike(term)}%`);
       const rows = db
         .prepare(
           `SELECT id, sid, seq, role, text, t FROM turns
@@ -194,12 +201,18 @@ export function retrieve(db, { text, recent = [], now = Date.now() } = {}) {
 
   hits.sort((a, b) => b.t - a.t);
   const picked = [];
+  const seenAsks = new Set();
   let chars = 0;
   for (const hit of hits) {
     if (picked.length >= MAX_HITS) break;
-    if (chars + hit.summary.length > MAX_CHARS) continue;
+    // 同一句提问引出的多条记忆只留最新一条，否则注入的是同一个问题的几个不同答案。
+    const summary = String(hit.summary ?? '');
+    const key = summary.startsWith('问：') ? summary.split('｜答：')[0] : summary.slice(0, 40);
+    if (seenAsks.has(key)) continue;
+    if (chars + summary.length > MAX_CHARS) continue;
+    seenAsks.add(key);
     picked.push(hit);
-    chars += hit.summary.length;
+    chars += summary.length;
   }
   return picked;
 }

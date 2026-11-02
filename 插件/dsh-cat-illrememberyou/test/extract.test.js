@@ -52,6 +52,13 @@ test('anchorsOf: paths, file names, message refs', () => {
   assert.ok(anchors.some((a) => a.includes('C:/tmp/x.mjs')));
 });
 
+test('anchorsOf: slash chat is not a path', () => {
+  const anchors = anchorsOf('比如 Copilot/你这边的 或者 作为一个本地工具/命令，真正的在 lib/recall.js');
+  assert.ok(!anchors.some((a) => a.includes('Copilot/')), 'English/Chinese chat is not a path');
+  assert.ok(!anchors.some((a) => a.includes('工具/命令')), 'Chinese/Chinese chat is not a path');
+  assert.ok(anchors.includes('lib/recall.js'));
+});
+
 test('entitiesOf: names and project nouns', () => {
   const names = entitiesOf('猫让岸把 dsh-cat-illrememberyou 接进 Ollama');
   assert.ok(names.includes('猫'));
@@ -81,7 +88,23 @@ test('refine: inserts memories and consumes the turns', () => {
   assert.ok(rows[0].summary.length > 0);
 });
 
-test('candidateOf: subject follows who wrote the block', () => {
+test('refine: an empty block is scanned but not consumed', () => {
+  const db = openStore(':memory:');
+  insertTurn(db, { sid: 's1', seq: 1, role: 'user', text: '嗯', t: 1000 });
+  insertTurn(db, { sid: 's1', seq: 2, role: 'assistant', text: '好', t: 1001 });
+
+  const result = refine(db);
+  assert.equal(result.memories, 0);
+
+  const row = db.prepare('SELECT consumed, scanned_at FROM turns WHERE seq = 1').get();
+  assert.equal(row.consumed, 0);
+  assert.ok(row.scanned_at > 0);
+  assert.equal(pendingCount(db), 0, 'inside the rescan window');
+  assert.equal(pendingCount(db, -1), 2, 'eligible again once the window passes');
+  db.close();
+});
+
+test('candidateOf: subject follows the summary source', () => {
   const human = candidateOf({
     turns: [
       turn({ role: 'user', text: '我更喜欢中文，以后回答都用中文。' }),
@@ -90,21 +113,34 @@ test('candidateOf: subject follows who wrote the block', () => {
   });
   assert.equal(human.subject, 'user');
 
-  const bot = candidateOf({
+  // 长回复不改变归属：摘要仍取自他这句话
+  const longAnswer = candidateOf({
     turns: [
-      turn({ role: 'user', text: '你在干嘛' }),
-      turn({ id: 2, role: 'assistant', text: '我在把记忆核心的取回逻辑接起来，顺便让渲染头不再写成裸事实，还要补情境进去。' }),
+      turn({ role: 'user', text: '其实我也不知道 我更倾向于你当大脑 因为copilot我还没用过 不知道他的实力' }),
+      turn({ id: 2, role: 'assistant', text: '这个判断我认。'.repeat(40) }),
     ],
   });
-  assert.equal(bot.subject, 'assistant');
+  assert.equal(longAnswer.subject, 'user');
 
-  const both = candidateOf({
+  const botOnly = candidateOf({
+    turns: [turn({ role: 'assistant', text: '我在把记忆核心的取回逻辑接起来，顺便把渲染头改成带情境的。' })],
+  });
+  assert.equal(botOnly.subject, 'assistant');
+});
+
+test('candidateOf: summary says what was asked and what was settled', () => {
+  const c = candidateOf({
     turns: [
-      turn({ role: 'user', text: '以后都走这个入口，别只靠分片，原文进库。' }),
-      turn({ id: 2, role: 'assistant', text: '好，分片降为导出视图，这周先把取回接起来再说。' }),
+      turn({ id: 1, role: 'user', text: 'ok 先验证吧 验证结果：取回一次都没触发，recall_log 还是 0 条。' }),
+      turn({ id: 2, role: 'assistant', text: '我查了日志，**根因**是 `turn` 绑成了 NULL，撞上 NOT NULL 约束。' }),
     ],
   });
-  assert.equal(both.subject, 'both');
+  assert.ok(c.summary.startsWith('问：'), c.summary);
+  assert.ok(!c.summary.startsWith('ok'));
+  assert.ok(c.summary.includes('取回一次都没触发'));
+  assert.ok(c.summary.includes('根因'));
+  assert.ok(!c.summary.includes('`'));
+  assert.ok(!c.summary.includes('**'));
 });
 
 test('refine: why carries the scene, not just a label', () => {
@@ -115,7 +151,7 @@ test('refine: why carries the scene, not just a label', () => {
   const row = db.prepare('SELECT why, subject FROM memories').get();
   assert.ok(row.why.startsWith('当时：'));
   assert.ok(row.why.includes('依据：decision'));
-  assert.ok(['user', 'assistant', 'both'].includes(row.subject));
+  assert.ok(['user', 'assistant'].includes(row.subject));
 });
 
 test('refine: empty queue is a no-op', () => {

@@ -1,14 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { openStore, insertTurn, pendingTurns, markConsumed } from '../lib/db.js';
+import { openStore, insertTurn, pendingTurns, markConsumed, markScanned } from '../lib/db.js';
 import { textOf, ingestEvent } from '../lib/ingest.js';
 
 function freshStore() {
   return openStore(':memory:');
 }
 
-test('schema creates all seven tables', () => {
+test('schema creates all eight tables', () => {
   const db = freshStore();
   const names = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
@@ -22,6 +22,7 @@ test('schema creates all seven tables', () => {
     'memories',
     'recall_log',
     'runs',
+    'shadow_log',
     'turns',
   ]);
   db.close();
@@ -57,6 +58,17 @@ test('pendingTurns returns oldest first and markConsumed clears them', () => {
 
   assert.equal(markConsumed(db, [pending[0].id, pending[1].id]), 2);
   assert.deepEqual(pendingTurns(db).map((r) => r.text), ['m3']);
+  db.close();
+});
+
+test('a scanned turn stays out of the queue until its rescan window passes', () => {
+  const db = freshStore();
+  insertTurn(db, { sid: 's', seq: 1, role: 'user', text: '嗯', t: 1 });
+  assert.equal(pendingTurns(db).length, 1);
+
+  markScanned(db, [1]);
+  assert.equal(pendingTurns(db).length, 0);
+  assert.equal(pendingTurns(db, 40, -1).length, 1);
   db.close();
 });
 

@@ -45,6 +45,21 @@ test('retrieve: unrelated sentence gets nothing', () => {
   assert.deepEqual(retrieve(db, { text: '今天天气不错', recent: [] }), []);
 });
 
+test('L2 matches anchors literally, so LIKE wildcards do not leak', () => {
+  const db = openStore(':memory:');
+  const insert = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('fact', '关于这个文件的笔记', ?, '[]', ?, '规则提炼：fact', 'active', 1000)`,
+  );
+  insert.run('notes_a_b.md', JSON.stringify(['notes_a_b.md']));
+  insert.run('notesXaXb.md', JSON.stringify(['notesXaXb.md']));
+
+  const hits = retrieve(db, { text: 'notes_a_b.md 还要改吗', recent: [] });
+  assert.equal(hits.length, 1);
+  assert.ok(hits[0].summary.includes('notes_a_b.md'));
+  db.close();
+});
+
 test('retrieve: anchor already in recent context is not fetched again', () => {
   const db = makeDb();
   const hits = retrieve(db, {
@@ -80,6 +95,21 @@ test('retrieve: caps hits at two', () => {
   }
   const hits = retrieve(db, { text: '产出/插件/foo.js 还要改吗', recent: [] });
   assert.equal(hits.length, 2);
+});
+
+test('retrieve: one question with several answers keeps only the newest', () => {
+  const db = openStore(':memory:');
+  const stmt = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, tier, t)
+     VALUES ('fact', ?, ?, '[]', ?, 'active', ?)`,
+  );
+  const q = '问：之前那个 lib/recall.js 的 L2 问题，再用一句话讲一遍';
+  stmt.run('旧的根因', `${q}｜答：找到根因了`, JSON.stringify(['产出/插件/foo.js']), 1000);
+  stmt.run('新的答案', `${q}｜答：用 json_each 精确等值`, JSON.stringify(['产出/插件/foo.js']), 2000);
+  const hits = retrieve(db, { text: '产出/插件/foo.js 还要改吗', recent: [] });
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].summary, `${q}｜答：用 json_each 精确等值`);
+  db.close();
 });
 
 test('knownOf: collects anchors and entities', () => {

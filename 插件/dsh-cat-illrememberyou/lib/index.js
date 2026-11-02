@@ -7,6 +7,8 @@ import { openStore, pendingCount } from './db.js';
 import { refine } from './extract.js';
 import { ingestEvent, textOf } from './ingest.js';
 import { retrieve, renderHint } from './recall.js';
+import { shadowPlan, recordShadow } from './shadow.js';
+import { forgetSweep } from './forget.js';
 
 export const name = 'dsh-cat-illrememberyou';
 
@@ -133,20 +135,31 @@ export function apply(ctx) {
       if (hits.length === 0) return decision;
       const text = renderHint(hits);
       log(`recall hits=${hits.length} chars=${text.length}`);
+      const sid = String(agent?.id ?? '');
+      const turn = Number.isFinite(Number(agent?.turn)) ? Number(agent?.turn) : 0;
       for (const hit of hits) {
         try {
           db.prepare(
             'INSERT INTO recall_log (sid, turn, t, memory_id, why) VALUES (?, ?, ?, ?, ?)',
           ).run(
-            String(agent?.id ?? ''),
-            Number(agent?.turn ?? 0),
+            sid,
+            turn,
             Date.now(),
             hit.source === 'memory' ? hit.id : null,
-            hit.why,
+            hit.why ?? '',
           );
-        } catch {
-          /* recall log is best effort */
+        } catch (error) {
+          log(`recall log failed: ${error?.message ?? error}`);
         }
+      }
+      // M3 影子：算「如果替换会少给多少、补多少」，只记账，不改 messages。
+      try {
+        const plan = shadowPlan({ messages, hits, query });
+        plan.hintChars = text.length;
+        recordShadow(db, { sid, turn, ...plan });
+        if (plan.replaced > 0) log(`shadow replaced=${plan.replaced} saved=${plan.replacedChars} added=${plan.added}`);
+      } catch (error) {
+        log(`shadow failed: ${error?.message ?? error}`);
       }
       return { ...decision, messages: [...decision.messages, hintMessage(text)] };
     } catch (error) {
@@ -160,11 +173,23 @@ export function apply(ctx) {
   const idleMs = Number(process.env.DSH_MEMORY_CORE_IDLE_MS ?? 5 * 60 * 1000);
   const tickMs = Number(process.env.DSH_MEMORY_CORE_TICK_MS ?? 60 * 1000);
   let refining = false;
+  let lastForget = 0;
+  const DAY = 24 * 60 * 60 * 1000;
   const timer = setInterval(() => {
     if (refining) return;
     if (Date.now() - lastActivity < idleMs) return;
     const db = currentStore();
     if (!db) return;
+    // M4：每日一次遗忘扫描，只降 tier，不删行；重启后第一次空闲会补跑。
+    if (Date.now() - lastForget >= DAY) {
+      lastForget = Date.now();
+      try {
+        const sweep = forgetSweep(db);
+        if (sweep.demoted) log(`forget dormant=${sweep.dormant} cold=${sweep.cold}`);
+      } catch (error) {
+        log(`forget failed: ${error?.message ?? error}`);
+      }
+    }
     try {
       if (pendingCount(db) === 0) return;
       refining = true;

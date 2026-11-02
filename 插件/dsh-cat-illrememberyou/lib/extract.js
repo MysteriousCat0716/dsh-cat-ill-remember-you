@@ -6,13 +6,13 @@
  * 等 M1.5 / M2 再接模型，接口不变（refine() 是唯一入口）。
  */
 
-import { pendingTurns, markConsumed } from './db.js';
+import { pendingTurns, markConsumed, markScanned } from './db.js';
 
 const JUDGE =
   /(以后|下次|记住|不要|别|必须|规则|约定|原则上|不再|改成|还是用|决定|定了|就这样|采用|选用|偏好|更喜欢|讨厌|不喜欢)/;
 
 const ANCHOR_FILE =
-  /[A-Za-z]:[\/][^\s"'）)】\]，,；;]+|(?:[\u4e00-\u9fa5\w.@-]+\/)+[\u4e00-\u9fa5\w.@-]+|[\u4e00-\u9fa5\w.-]+\.(?:mjs|js|ts|tsx|md|json|ya?ml|py|sh|ps1|cmd|txt|png|svg|db)/g;
+  /[A-Za-z]:[\/][^\s"'）)】\]，,；;]+|(?:[\u4e00-\u9fa5\w.@-]+\/)*[\u4e00-\u9fa5\w.-]+\.(?:mjs|js|ts|tsx|md|json|ya?ml|py|sh|ps1|cmd|txt|png|svg|db)/g;
 const ANCHOR_MSG = /\bm\d{5}\b/g;
 const ENTITY = /猫|岸|DeepSeek|dsh[\w-]*|Ollama|qwen[\w.:-]*/g;
 
@@ -96,20 +96,15 @@ export function entitiesOf(text) {
 }
 
 /**
- * Who a memory is about: the human, the assistant, or both.
- * Heuristic for now — `decision`/`preference` mostly come from the human side,
- * a long assistant answer with a short human prompt is about the assistant's
- * own reasoning, and equal weight is `both`. The M3 model pass replaces this.
+ * Who a memory is about: the human or the assistant.
+ * The summary/body of a candidate comes from the human turn whenever there is
+ * one, so the subject follows the summary's source instead of comparing lengths.
+ * A block with only an assistant turn is about the assistant.
  * @param {string} userText
- * @param {string} botText
- * @returns {'user'|'assistant'|'both'}
+ * @returns {'user'|'assistant'}
  */
-function subjectOf(userText, botText) {
-  if (!userText) return 'assistant';
-  if (!botText) return 'user';
-  if (userText.length >= botText.length) return 'user';
-  if (botText.length > userText.length * 2) return 'assistant';
-  return 'both';
+function subjectOf(userText) {
+  return userText ? 'user' : 'assistant';
 }
 
 /**
@@ -117,6 +112,48 @@ function subjectOf(userText, botText) {
  * (pure acknowledgement / empty / only a tool line).
  * @param {{turns:Array<{role:string,text:string}>}} block
  */
+const GREETING = /^(ok|okay|好的?|嗯+|啊+|行|收到|可以|对的?|是的|好滴)[\s，,。.!！~～]*/i;
+
+/** Split on sentence enders, keep the enders. */
+function sentencesOf(text) {
+  return String(text ?? '')
+    .split(/(?<=[。！？!?；;])/u)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Strip markdown emphasis/code markers so summaries read as plain text. */
+function stripMarkup(s) {
+  return s.replace(/[*`#>]+/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/** The most informative sentence, with acknowledgement softeners removed. */
+function coreOf(text, n) {
+  const source = squash(text);
+  const parts = sentencesOf(source)
+    .map((s) =>
+      s
+        .replace(GREETING, '')
+        .replace(/^(顺带|顺便|另外|对了)[，,：: ]*/, '')
+        .trim(),
+    )
+    .filter((s) => s.length >= 6);
+  if (parts.length === 0) return head(stripMarkup(source.replace(GREETING, '')), n);
+  parts.sort((a, b) => b.length - a.length);
+  return head(stripMarkup(parts[0]), n);
+}
+
+/**
+ * A retrievable one-liner: the human's point + what the assistant settled.
+ * Rule-based until a real summarizer replaces it.
+ */
+function digestOf(userText, botText) {
+  const ask = coreOf(userText, 60);
+  const answer = coreOf(botText, 90);
+  if (ask && answer) return `问：${ask}｜答：${answer}`;
+  return ask || answer;
+}
+
 export function candidateOf(block) {
   const user = block.turns.find((t) => t.role === 'user');
   const assistant = block.turns.find((t) => t.role === 'assistant');
@@ -129,13 +166,12 @@ export function candidateOf(block) {
   if (userText.length < 6 && botText.length < 20) return null;
 
   const kind = classify(userText, allText);
-  const summary =
-    userText.length >= 12 ? head(userText, 90) : head(`${userText} ${botText}`, 90);
+  const summary = digestOf(userText, botText);
   const scene = head(userText || botText, 50);
   return {
     kind,
     origin: user?.origin ?? 'chat',
-    subject: subjectOf(userText, botText),
+    subject: subjectOf(userText),
     text: allText.slice(0, 2000),
     summary,
     entities: entitiesOf(allText),
@@ -168,7 +204,7 @@ function insertMemory(db, item) {
   const result = stmt.run(
     item.kind,
     item.origin ?? 'chat',
-    item.subject ?? 'both',
+    item.subject ?? 'user',
     item.text,
     item.summary,
     JSON.stringify(item.entities),
@@ -205,9 +241,15 @@ export function refine(db, opts = {}) {
     }
     consumed.push(...candidate.ids);
   }
-  // 即使分块没产出候选，也把这一批标成已处理，避免反复扫同一批
-  const allIds = turns.map((t) => t.id);
-  markConsumed(db, [...new Set([...consumed, ...allIds])]);
+  // Consume only the turns that produced a memory. A block that matched no
+  // candidate stays in the raw store, merely scanned: a later rule set or model
+  // must still be able to read what the current one skipped.
+  markConsumed(db, [...new Set(consumed)]);
+  const consumedSet = new Set(consumed);
+  markScanned(
+    db,
+    turns.map((t) => t.id).filter((id) => !consumedSet.has(id)),
+  );
   return { turns: turns.length, memories };
 }
 
