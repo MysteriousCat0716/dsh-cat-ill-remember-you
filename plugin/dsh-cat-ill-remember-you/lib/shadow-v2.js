@@ -21,8 +21,9 @@ import path from 'node:path';
 export const DEFAULT_KEEP = 10;
 export const DEFAULT_WINDOW = 40;
 export const MAX_REPLACE_CHARS = 600;
-// 收益门槛：替换文本要比被换原文明显短才值得真换。
-export const REPLACE_GAIN = 0.7;
+// 收益判据只有一条：换完整个上下文变短就换，变长就不换。1.0 = 净变短即可。
+// 不用 0.7 那种「必须省三成」的固定比例——它在小窗口上会把本来该换的挡掉。
+export const REPLACE_GAIN = 1.0;
 
 /** 读整数环境变量；空值或非法值回落到默认。 */
 function envInt(name, fallback) {
@@ -147,8 +148,7 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS } = {
   // 约定句原样留：关键词救不了「以后不要怎样」，句子才行。
   const promises = promiseLines(list, { max: 4, chars: 36 });
   const header =
-    `[上下文替换] 更早的 ${list.length} 条消息（seq ${first}-${last}）原文在本地，` +
-    `这里只留接得上的摘要：\n` +
+    `[上下文替换] 更早 ${list.length} 条（seq ${first}-${last}），原文在本地：\n` +
     (keywords.length > 0 ? `关键词：${keywords.join('、')}\n` : '') +
     (promises.length > 0 ? `约定：${promises.join('；')}\n` : '');
   const limit = Math.max(80, maxChars - header.length - 10);

@@ -214,7 +214,7 @@ test('planShadowV2: 默认不真替换（REPLACE 关）', async () => {
 
 test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', async () => {
   const db = openStore(':memory:');
-  // 原文要够长，替换文本才明显短于窗口（收益门槛 0.7）。
+  // 原文要够长，替换文本才短于窗口（收益判据：净变短才换）。
   const longEntries = Array.from({ length: 14 }, (_, i) => [
     i + 1,
     i % 2 === 0 ? 'user' : 'assistant',
