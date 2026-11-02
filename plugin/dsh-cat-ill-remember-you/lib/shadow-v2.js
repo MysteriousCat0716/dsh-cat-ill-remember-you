@@ -308,7 +308,12 @@ export function applyReplacement(session, replaced, text, sid) {
   const startSeq = replaced[0].seq;
   const endSeq = replaced.at(-1).seq;
   const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes : [];
-  const seqs = nodes.filter((seq) => seq >= startSeq && seq <= endSeq);
+  // 按位置取区间，不按 seq 值过滤：早先替换块的 seq 比它所在位置大，会夹在
+  // 后续区间中间。值过滤会把它漏掉，而宿主按位置判断 shadowedSeqs，报 missing。
+  const startIdx = nodes.indexOf(startSeq);
+  const endIdx = nodes.indexOf(endSeq);
+  if (startIdx < 0 || endIdx < startIdx) return false;
+  const seqs = nodes.slice(startIdx, endIdx + 1);
   if (seqs.length === 0) return false;
   try {
     session.append(
@@ -364,18 +369,28 @@ export function planShadowV2(
   const rangeStart = replaced[0].seq;
   const rangeEnd = replaced.at(-1).seq;
   // 同一区间不重复记账：每轮都会重算，但被换的窗口没动就没新信息。
+  // 例外：白名单内上一次 apply 失败（applied=0）时允许重试，否则一次
+  // 微任务失败会让这段永远停在原文；只看不换的会话仍然去重。
   const last = db
-    .prepare('SELECT range_start, range_end FROM shadow_v2 WHERE sid = ? ORDER BY id DESC LIMIT 1')
+    .prepare('SELECT range_start, range_end, applied FROM shadow_v2 WHERE sid = ? ORDER BY id DESC LIMIT 1')
     .get(sid);
-  if (last && last.range_start === rangeStart && last.range_end === rangeEnd) return null;
+  if (
+    last
+    && last.range_start === rangeStart
+    && last.range_end === rangeEnd
+    && (!replaceEnabled(sid) || Number(last.applied) === 1)
+  ) {
+    return null;
+  }
   const text = renderReplacement(replaced);
   const assessment = assessReplacement({ replaced, kept, text });
   const charsBefore = replaced.reduce((total, entry) => total + entry.text.length, 0);
-  // 冷却：刚换过就只记账，别每轮都改前缀。
+  // 冷却：刚换过就先不换，也不记账——窗口没动，再记一行没有新信息。
+  // 只看不换的会话没有 applied=1 的行，永远不走这条分支。
   const recent = db
     .prepare('SELECT t FROM shadow_v2 WHERE sid = ? AND applied = 1 ORDER BY id DESC LIMIT 1')
     .get(sid);
-  const cooledDown = !recent || now - recent.t >= REPLACE_COOLDOWN_MS;
+  if (recent && now - recent.t < REPLACE_COOLDOWN_MS) return null;
   const row = {
     sid,
     turn: 0,
@@ -398,8 +413,8 @@ export function planShadowV2(
   queueMicrotask(() => {
     try {
       // 判据：换完变长变短都换——替换文本是接续用的缓存，不是压缩。
-      // 只跳过冷却期内的重复请求。
-      if (cooledDown && applyReplacement(session, replaced, text, sid)) {
+      // 冷却已在记账前挡掉，这里只试一次；失败留 applied=0，下一轮重试。
+      if (applyReplacement(session, replaced, text, sid)) {
         db.prepare('UPDATE shadow_v2 SET applied = 1 WHERE id = ?').run(Number(info.lastInsertRowid));
       }
     } catch {

@@ -15,6 +15,8 @@
 - **M4 遗忘**：每日一次，按取回/验证时间降 tier，只标不删，落 `forget_log`。保留期分三档：`permanent` 永不降级（偏好）、`ephemeral` 7 天没碰沉 dormant（情绪）、`auto` 走默认曲线（30/90 天）。
 - **M5 跨会话接续**：新会话第一轮，注入同 workspace 上一个会话的最后几条**原文**（`lib/originals.js` 读 `~/.dsh/sessions/<workspace>/<sid>/session.v4.jsonl.zstd`，append-only，被替换掉的原文也在；跳过子代理会话与空会话），标 `[上次会话结尾]`，≤1600 字，每会话一次。原文读不到时才退回 `shadow_v2` 里 `applied=1`、同 `cwd`、非当前会话的缓存摘要——摘要永远是退路。跨 workspace 不串；`cwd` 为空的历史行不参与。「是不是新会话」按**会话历史**判断——`session.surface` 里有没有 assistant 回复。不能用 pre-step 的 `messages`：那是 inbox 里 claim 到的本轮新消息（`dsh-agent-loop/lib/index.js:909-912` `messages: claimed`），拿它判 assistant 永远为假，主会话每轮都会被注入（2026-11-03 01:31 实机踩到）。也不能用 `turn`——那是进程内轮次（`dsh-agent-loop/lib/index.js:943` `const turn = phase.turn + 1`），旧会话恢复后也从 1 开始。
 
+替换的区间按**位置**取（`surface.nodes.indexOf(startSeq)` 到 `indexOf(endSeq)`），不能按 seq 值过滤：早先替换块的 seq 比它所在的位置大，会夹在后续区间中间；值过滤会漏掉它，宿主按位置算 `shadowedSeqs`，直接报 `missing`。同一区间只记一次账，但白名单内上次 `applied=0`（append 失败）时允许下一轮重试；冷却期内不记账也不替换。
+
 ## 数据
 
 默认 `~/.dsh/memory/core.db`，`DSH_MEMORY_CORE_DB` 可覆盖。
@@ -29,7 +31,7 @@
 node --test test/
 ```
 
-114 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。
+116 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。
 
 ## 环境变量
 

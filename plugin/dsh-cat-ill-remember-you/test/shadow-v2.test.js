@@ -11,6 +11,7 @@ import {
   splitKeep,
   renderReplacement,
   assessReplacement,
+  applyReplacement,
   planShadowV2,
 } from '../lib/shadow-v2.js';
 
@@ -251,10 +252,11 @@ test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', as
     assert.equal(call.options.surfaceOp.op, 'replace');
     assert.equal(call.options.surfaceOp.startSeq, plan.rangeStart);
     assert.equal(call.options.surfaceOp.endSeq, plan.rangeEnd);
-    const nodes = session.surface.nodes.filter(
-      (seq) => seq >= plan.rangeStart && seq <= plan.rangeEnd,
-    );
-    assert.deepEqual(call.options.sourceEventSeqs, nodes);
+    // 宿主要的是按位置的区间：startSeq 到 endSeq 之间（含端点）的 surface 节点。
+    const nodes = session.surface.nodes;
+    const startIdx = nodes.indexOf(plan.rangeStart);
+    const endIdx = nodes.indexOf(plan.rangeEnd);
+    assert.deepEqual(call.options.sourceEventSeqs, nodes.slice(startIdx, endIdx + 1));
     assert.equal(call.data.source.kind, 'context-replacement');
     // 宿主 assertMessageEventShape 要求带非空字符串 id，缺了会话会被判 corrupt。
     assert.ok(typeof call.data.id === 'string' && call.data.id.length > 0);
@@ -340,4 +342,70 @@ test('planShadowV2: 同一区间不重复记账', () => {
   const count = db.prepare('SELECT COUNT(*) AS n FROM shadow_v2').get().n;
   assert.equal(Number(count), 1);
   db.close();
+});
+
+test('applyReplacement: 位置区间里夹着早先替换块时，按位置取 seqs 而不是按值', () => {
+  const list = tempSessionList(['sid-gap']);
+  const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  const appended = [];
+  // 真实形状：旧的替换块 seq=313 位置在 100 和 101 之间，值却比当前区间尾部大。
+  const session = {
+    id: 'sid-gap',
+    surface: { nodes: [0, 100, 313, 101, 102] },
+    append: (type, data, options) => appended.push({ type, data, options }),
+  };
+  try {
+    const ok = applyReplacement(session, [{ seq: 100 }, { seq: 102 }], '替换文本', 'sid-gap');
+    assert.equal(ok, true);
+    assert.equal(appended.length, 1);
+    assert.deepEqual(appended[0].options.sourceEventSeqs, [100, 313, 101, 102]);
+    assert.deepEqual(appended[0].options.surfaceOp, { op: 'replace', startSeq: 100, endSeq: 102 });
+  } finally {
+    if (previousList === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
+    list.cleanup();
+  }
+});
+
+test('planShadowV2: 白名单内 apply 失败后同区间下一轮会重试，成功后不再重复', async () => {
+  const db = openStore(':memory:');
+  const longEntries = Array.from({ length: 14 }, (_, i) => [
+    i + 1,
+    i % 2 === 0 ? 'user' : 'assistant',
+    `消息 第 ${i + 1} 条 ` + '这是一段比较长的原文，用来让替换文本明显短于被换窗口。'.repeat(10),
+  ]);
+  const session = fakeSession(longEntries, 'sid-retry');
+  const realAppend = session.append;
+  let calls = 0;
+  session.append = (...args) => {
+    calls += 1;
+    if (calls === 1) throw new Error('boom');
+    return realAppend(...args);
+  };
+  const list = tempSessionList(['sid-retry']);
+  const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  try {
+    const first = planShadowV2(session, db, { keep: 10, now: 1 });
+    assert.ok(first);
+    await tick();
+    const afterFirst = db.prepare('SELECT applied FROM shadow_v2 ORDER BY id DESC LIMIT 1').get();
+    assert.equal(Number(afterFirst.applied), 0);
+
+    const second = planShadowV2(session, db, { keep: 10, now: 2 });
+    assert.ok(second, '上次没换成，同区间应该允许重试');
+    await tick();
+    assert.equal(calls, 2);
+    const afterSecond = db.prepare('SELECT applied FROM shadow_v2 ORDER BY id DESC LIMIT 1').get();
+    assert.equal(Number(afterSecond.applied), 1);
+
+    const third = planShadowV2(session, db, { keep: 10, now: 3 });
+    assert.equal(third, null, '换成功之后同区间不再重复记账');
+  } finally {
+    if (previousList === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
+    list.cleanup();
+    db.close();
+  }
 });
