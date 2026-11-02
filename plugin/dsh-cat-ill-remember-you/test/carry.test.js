@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 
 import { openStore } from '../lib/db.js';
 import { recordShadowV2 } from '../lib/shadow-v2.js';
+import { sessionLogFile, setOriginalsLogger } from '../lib/originals.js';
 import {
   LAST_SESSION_MARK,
   LAST_SESSION_MAX_CHARS,
@@ -204,4 +208,33 @@ test('planCarry: 没有可接的缓存就安静返回 null', () =>
       }),
       null,
     );
+  }));
+
+test('planCarry: turns 里的会话全接过之后，不再解压会话文件', () =>
+  withStore((db) => {
+    const root = mkdtempSync(join(tmpdir(), 'carry-hot-'));
+    try {
+      // 放一个解压不了的文件：真落到退路一，readSessionEvents 会 warn。
+      const file = sessionLogFile({ sid: 'other', cwd: '/w', sessionsRoot: root });
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, 'not a zstd stream');
+      db.prepare(
+        'INSERT OR IGNORE INTO turns (sid, seq, role, origin, text, t) VALUES (?, ?, ?, ?, ?, ?)',
+      ).run('other', 1, 'user', 'chat', '别处说的一句', 9_000_000_000_000);
+
+      const first = planCarry(db, { cwd: '/w', sid: 'me', messages: [], sessionsRoot: root });
+      assert.ok(first?.includes('别处说的一句'));
+
+      const warns = [];
+      try {
+        setOriginalsLogger((text) => warns.push(text));
+        const second = planCarry(db, { cwd: '/w', sid: 'me', messages: [], sessionsRoot: root });
+        assert.equal(second, null);
+        assert.deepEqual(warns, []);
+      } finally {
+        setOriginalsLogger(() => {});
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   }));

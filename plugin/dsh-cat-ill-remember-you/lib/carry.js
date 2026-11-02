@@ -313,7 +313,9 @@ export function planCarry(
 
   // 正路：turns 表里所有其他会话的最近几条，各会话独立去重。
   const tails = [];
+  let sawAnyTurn = false;
   for (const tail of recentTurnsBySession(db, { sid })) {
+    sawAnyTurn = true;
     const lastSeq = Number(tail.messages[tail.messages.length - 1]?.seq) || 0;
     const mine = lastCarry(db, sid, tail.sid);
     if (mine.seq >= lastSeq && mine.t >= tail.mtime) continue;
@@ -326,6 +328,10 @@ export function planCarry(
     }
     return renderMultiCarry(tails, maxChars);
   }
+
+  // turns 里有别的会话，但每一条都已经接过：没有新内容。
+  // 不能落到退路一——那会在每个 pre-step 同步解压会话文件，读完还是 null。
+  if (sawAnyTurn) return null;
 
   // 退路一：原文文件（turns 还没写入、或换了机器）。
   let tail = null;
