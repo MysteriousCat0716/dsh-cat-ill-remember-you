@@ -134,7 +134,13 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS } = {
   if (list.length === 0) return '';
   const first = list[0]?.seq ?? 0;
   const last = list.at(-1)?.seq ?? 0;
-  const limit = Math.max(80, maxChars - 90);
+  // 实体·锚点清单先写：断链几乎都发生在这些 token 上，把它们钉在文本最前面。
+  const keywords = keyTokens(list).slice(0, 24);
+  const header =
+    `[上下文替换] 更早的 ${list.length} 条消息（seq ${first}-${last}）原文在本地，` +
+    `这里只留接得上的摘要：\n` +
+    (keywords.length > 0 ? `关键词：${keywords.join('、')}\n` : '');
+  const limit = Math.max(80, maxChars - header.length - 10);
   const picked = [];
   let size = 0;
   // 从最近的老消息往回填：贴着保留区的细节更可能被下一轮接着用。
@@ -150,25 +156,22 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS } = {
   }
   if (picked.length === 0) {
     const entry = [...list].reverse().find((item) => condense(item));
-    if (!entry) return '';
+    if (!entry) return header;
     const prefix = entry.role === 'user' ? '他说' : '我说';
     picked.push(`- ${prefix}: ${condense(entry).slice(0, Math.max(20, limit - 10))}`);
   }
   picked.reverse();
-  const header =
-    `[上下文替换] 更早的 ${list.length} 条消息（seq ${first}-${last}）原文在本地，` +
-    `这里只留接得上的摘要：\n`;
   const out = header + picked.join('\n');
   return out.length <= maxChars ? out : `${out.slice(0, maxChars - 1)}…`;
 }
 
-/** 被换窗口里的锚点/实体，去重。 */
+/** 被换窗口里的锚点/实体，去重。实体在前：回放显示 entities key 的断链率是 anchors 的十分之一。 */
 export function keyTokens(entries) {
   const list = Array.isArray(entries) ? entries : [];
   const source = list.map((entry) => entry.text).join('\n');
   const tokens = new Set();
-  for (const anchor of anchorsOf(source)) tokens.add(anchor);
   for (const entity of entitiesOf(source)) tokens.add(entity);
+  for (const anchor of anchorsOf(source)) tokens.add(anchor);
   return [...tokens];
 }
 

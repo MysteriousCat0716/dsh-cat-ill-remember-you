@@ -17,6 +17,10 @@ export const TIER_COLD = 'cold';
 /** Kinds that stay active until verified obsolete by hand. */
 const STICKY_KINDS = new Set(['decision', 'preference']);
 
+/** retention='ephemeral' 的短曲线：7 天没碰就沉，再 7 天进 cold。 */
+export const EPHEMERAL_DORMANT_MS = 7 * DAY_MS;
+export const EPHEMERAL_COLD_MS = 7 * DAY_MS;
+
 /** Used time: last_used if it was ever fetched, else the moment it was written. */
 function lastTouched(row) {
   const used = row.last_used ?? 0;
@@ -36,7 +40,7 @@ export function forgetSweep(db, opts = {}) {
 
   const rows = db
     .prepare(
-      "SELECT id, kind, tier, t, last_used FROM memories WHERE tier IN ('active','dormant')",
+      "SELECT id, kind, tier, retention, t, last_used FROM memories WHERE tier IN ('active','dormant')",
     )
     .all();
 
@@ -53,18 +57,29 @@ export function forgetSweep(db, opts = {}) {
   db.exec('BEGIN IMMEDIATE');
   try {
     for (const row of rows) {
-      if (STICKY_KINDS.has(row.kind)) continue;
+      // 显式 permanent 永不降级；ephemeral 走短曲线；auto 走默认曲线。
+      if (row.retention === 'permanent') continue;
+      const ephemeral = row.retention === 'ephemeral';
+      if (!ephemeral && STICKY_KINDS.has(row.kind)) continue;
       const age = now - lastTouched(row);
-      if (row.tier === TIER_ACTIVE && age >= dormantAfterMs) {
+      const dormantAt = ephemeral ? EPHEMERAL_DORMANT_MS : dormantAfterMs;
+      const coldAt = dormantAt + (ephemeral ? EPHEMERAL_COLD_MS : coldAfterMs);
+      if (row.tier === TIER_ACTIVE && age >= dormantAt) {
         markDormant.run(row.id);
-        log.run(row.id, now, `active ${Math.floor(age / DAY_MS)}d unused`, TIER_ACTIVE, TIER_DORMANT);
+        log.run(
+          row.id,
+          now,
+          `${ephemeral ? 'ephemeral ' : ''}active ${Math.floor(age / DAY_MS)}d unused`,
+          TIER_ACTIVE,
+          TIER_DORMANT,
+        );
         dormant += 1;
-      } else if (row.tier === TIER_DORMANT && age >= dormantAfterMs + coldAfterMs) {
+      } else if (row.tier === TIER_DORMANT && age >= coldAt) {
         markCold.run(row.id);
         log.run(
           row.id,
           now,
-          `dormant ${Math.floor(age / DAY_MS)}d unused`,
+          `${ephemeral ? 'ephemeral ' : ''}dormant ${Math.floor(age / DAY_MS)}d unused`,
           TIER_DORMANT,
           TIER_COLD,
         );

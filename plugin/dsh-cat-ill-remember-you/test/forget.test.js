@@ -4,12 +4,12 @@ import assert from 'node:assert/strict';
 import { openStore } from '../lib/db.js';
 import { forgetSweep, DAY_MS } from '../lib/forget.js';
 
-function seed(db, { kind = 'fact', tier = 'active', t = 0, lastUsed = 0, text = 'x' }) {
+function seed(db, { kind = 'fact', tier = 'active', t = 0, lastUsed = 0, text = 'x', retention = 'auto' }) {
   const info = db
     .prepare(
-      'INSERT INTO memories (kind, text, summary, t, tier, last_used) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO memories (kind, text, summary, t, tier, retention, last_used) VALUES (?, ?, ?, ?, ?, ?, ?)',
     )
-    .run(kind, text, text, t, tier, lastUsed || null);
+    .run(kind, text, text, t, tier, retention, lastUsed || null);
   return Number(info.lastInsertRowid);
 }
 
@@ -67,5 +67,39 @@ test('recently used memory is not demoted even if written long ago', () => {
   const id = seed(db, { t: now - 100 * DAY_MS, lastUsed: now - DAY_MS });
   forgetSweep(db, { now });
   assert.equal(tierOf(db, id), 'active');
+  db.close();
+});
+
+test('retention=permanent never demotes, even after 100 days', () => {
+  const db = openStore(':memory:');
+  const now = 200 * DAY_MS;
+  const id = seed(db, { kind: 'fact', retention: 'permanent', t: now - 100 * DAY_MS });
+  forgetSweep(db, { now });
+  assert.equal(tierOf(db, id), 'active');
+  db.close();
+});
+
+test('retention=ephemeral demotes after 7 days, not 30', () => {
+  const db = openStore(':memory:');
+  const now = 100 * DAY_MS;
+  const fast = seed(db, { kind: 'emotion', retention: 'ephemeral', t: now - 8 * DAY_MS });
+  const slow = seed(db, { kind: 'emotion', retention: 'auto', t: now - 8 * DAY_MS });
+  forgetSweep(db, { now });
+  assert.equal(tierOf(db, fast), 'dormant');
+  assert.equal(tierOf(db, slow), 'active');
+  db.close();
+});
+
+test('retention=ephemeral dormant goes cold after another 7 days', () => {
+  const db = openStore(':memory:');
+  const now = 100 * DAY_MS;
+  const id = seed(db, {
+    kind: 'emotion',
+    retention: 'ephemeral',
+    tier: 'dormant',
+    t: now - 15 * DAY_MS,
+  });
+  forgetSweep(db, { now });
+  assert.equal(tierOf(db, id), 'cold');
   db.close();
 });

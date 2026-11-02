@@ -163,6 +163,13 @@ function digestOf(userText, botText) {
   return ask || answer;
 }
 
+/** 保留期：preference 是 persona 常驻内容，emotion 是短时效，其余走默认遗忘曲线。 */
+export function retentionOf(kind) {
+  if (kind === 'preference') return 'permanent';
+  if (kind === 'emotion') return 'ephemeral';
+  return 'auto';
+}
+
 export function candidateOf(block) {
   const user = block.turns.find((t) => t.role === 'user');
   // The conclusion usually sits in the last step of a multi-step reply; the
@@ -190,6 +197,7 @@ export function candidateOf(block) {
     anchors: anchorsOf(allText),
     why: `当时：${scene}｜依据：${kind}`,
     tier: 'active',
+    retention: retentionOf(kind),
     t: Number(block.turns[block.turns.length - 1]?.t ?? Date.now()),
     source_sid: user?.sid ?? null,
     source_seq: user?.seq ?? null,
@@ -210,8 +218,8 @@ function upsertEntities(db, names, t) {
 /** @param {DatabaseSync} db */
 function insertMemory(db, item) {
   const stmt = db.prepare(
-    'INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, t, source_sid, source_seq) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, retention, t, source_sid, source_seq) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
   const result = stmt.run(
     item.kind,
@@ -223,6 +231,7 @@ function insertMemory(db, item) {
     JSON.stringify(item.anchors),
     item.why,
     item.tier,
+    item.retention ?? 'auto',
     item.t,
     item.source_sid,
     item.source_seq,

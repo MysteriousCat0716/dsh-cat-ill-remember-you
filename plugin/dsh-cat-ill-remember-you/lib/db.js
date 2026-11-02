@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS memories (
   anchors    TEXT    NOT NULL DEFAULT '[]',
   why        TEXT    NOT NULL DEFAULT '',
   tier       TEXT    NOT NULL DEFAULT 'active',
+  retention  TEXT    NOT NULL DEFAULT 'auto',
   t          INTEGER NOT NULL,
   last_used  INTEGER,
   verified   INTEGER,
@@ -168,6 +169,7 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'turns', 'origin', "TEXT NOT NULL DEFAULT 'chat'");
     ensureColumn(db, 'memories', 'origin', "TEXT NOT NULL DEFAULT 'chat'");
     ensureColumn(db, 'memories', 'subject', "TEXT NOT NULL DEFAULT 'user'");
+    ensureColumn(db, 'memories', 'retention', "TEXT NOT NULL DEFAULT 'auto'");
     ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
     return db;
   } catch (error) {
