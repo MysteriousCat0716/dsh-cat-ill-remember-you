@@ -93,8 +93,15 @@ test('pre-step: 第一轮注入上一个会话的最后缓存', async () => {
   assert.equal(result.messages.filter((message) => message.source?.kind === 'user').length, 1);
 });
 
-test('pre-step: 第二轮不再注入', async () => {
-  const result = await runPreStep({ turn: 2, messages: [userMessage('第二句')] });
+test('pre-step: 聊过的会话不再注入（turn 从 1 开始也不算新会话）', async () => {
+  const result = await runPreStep({
+    turn: 1,
+    messages: [
+      userMessage('早'),
+      { role: 'assistant', content: [{ type: 'text', text: '在' }] },
+      userMessage('继续'),
+    ],
+  });
   assert.equal(result.messages.filter((message) => message.source?.kind === 'memory-core').length, 0);
 });
 

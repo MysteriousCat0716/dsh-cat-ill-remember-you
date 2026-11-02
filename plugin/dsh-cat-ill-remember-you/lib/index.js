@@ -155,25 +155,23 @@ export function apply(ctx) {
       const db = currentStore();
       if (!db) return decision;
       const sid = String(agent?.id ?? '');
-      // turn lives on the pre-step payload, not on the Agent object.
-      const turnNo = Number.isFinite(Number(turn)) ? Number(turn) : 0;
       const extra = [];
 
-      // M5：第一轮接上同一个 workspace 里上一个会话的最后缓存。
+      // M5：会话第一轮接上同一个 workspace 里上一个会话的最后缓存。
       // 只认真替换过的行（applied=1），那是模型实际读过的接续文本；
       // cwd 为空的历史行不参与——宁可接不上也不串项目。
-      if (turnNo <= 1) {
-        try {
-          const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sid) : undefined;
-          const cwd = session?.header?.cwd;
-          const carry = planCarry(db, { cwd, sid, turn: turnNo, messages: decision.messages });
-          if (carry) {
-            extra.push(hintMessage(carry));
-            log(`carry chars=${carry.length} cwd=${cwd}`);
-          }
-        } catch (error) {
-          log(`carry failed: ${error?.message ?? error}`);
+      // 是不是「第一轮」由 carry.js 按会话历史判断：不用 turn，
+      // 那是进程内轮次（旧会话恢复后也从 1 开始）。
+      try {
+        const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sid) : undefined;
+        const cwd = session?.header?.cwd;
+        const carry = planCarry(db, { cwd, sid, messages: decision.messages });
+        if (carry) {
+          extra.push(hintMessage(carry));
+          log(`carry chars=${carry.length} cwd=${cwd}`);
         }
+      } catch (error) {
+        log(`carry failed: ${error?.message ?? error}`);
       }
 
       const query = lastUserText(messages);

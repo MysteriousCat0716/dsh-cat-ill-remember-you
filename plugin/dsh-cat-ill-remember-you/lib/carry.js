@@ -83,16 +83,27 @@ export function hasCarry(messages) {
 }
 
 /**
+ * 会话里是否已经有过 assistant 回复。
+ *
+ * 这是「是不是新会话」的判据，不用 pre-step 的 turn：turn 是**进程内**轮次
+ * （dsh-agent-loop/lib/index.js:943 `const turn = phase.turn + 1`），旧会话
+ * 恢复后第一轮也是 1，拿它当判据会把「上个会话结尾」塞进一个聊了很久的会话。
+ * 新会话第一轮不可能有 assistant 历史，这个判据跨重启也成立。
+ */
+export function hasAssistantTurn(messages) {
+  if (!Array.isArray(messages)) return false;
+  return messages.some((message) => message?.role === 'assistant');
+}
+
+/**
  * 接线用的纯函数：该不该注入、注入什么。
  * @param {import('node:sqlite').DatabaseSync} db
- * @param {{cwd?:string, sid?:string, turn?:number, messages?:Array, maxChars?:number}} options
+ * @param {{cwd?:string, sid?:string, messages?:Array, maxChars?:number}} options
  * @returns {string|null}
  */
-export function planCarry(db, { cwd, sid, turn, messages, maxChars = LAST_SESSION_MAX_CHARS } = {}) {
-  const turnNo = Number(turn);
-  // 只在第一轮：第二轮的上下文里已经有这条了。
-  if (!Number.isFinite(turnNo) || turnNo > 1) return null;
+export function planCarry(db, { cwd, sid, messages, maxChars = LAST_SESSION_MAX_CHARS } = {}) {
   if (hasCarry(messages)) return null;
+  if (hasAssistantTurn(messages)) return null;
   const row = lastSessionCache(db, { cwd, sid, maxChars });
   return row ? renderCarry(row) : null;
 }

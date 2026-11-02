@@ -101,21 +101,34 @@ test('hasCarry: 认标记，不误伤普通消息', () => {
   assert.equal(hasCarry(undefined), false);
 });
 
-test('planCarry: 第二轮不注入', () =>
+test('planCarry: 新会话注入，已有 assistant 回复的会话不注入', () =>
   withStore((db) => {
     recordShadowV2(db, shadowRow());
-    assert.equal(planCarry(db, { cwd: '/w', sid: 'me', turn: 2, messages: [] }), null);
-    assert.ok(planCarry(db, { cwd: '/w', sid: 'me', turn: 1, messages: [] }));
+    // 新会话第一轮：只有一个用户消息。
+    assert.ok(planCarry(db, { cwd: '/w', sid: 'me', messages: [{ role: 'user', content: '在吗' }] }));
+    // 聊过的会话（含重启后恢复的旧会话）：turn 会从 1 开始，但历史里有 assistant。
+    assert.equal(
+      planCarry(db, {
+        cwd: '/w',
+        sid: 'me',
+        messages: [
+          { role: 'user', content: '早' },
+          { role: 'assistant', content: '在' },
+          { role: 'user', content: '继续' },
+        ],
+      }),
+      null,
+    );
   }));
 
 test('planCarry: 已经注入过就不再注入', () =>
   withStore((db) => {
     recordShadowV2(db, shadowRow());
     const messages = [{ role: 'user', content: `${LAST_SESSION_MARK} 已注入` }];
-    assert.equal(planCarry(db, { cwd: '/w', sid: 'me', turn: 1, messages }), null);
+    assert.equal(planCarry(db, { cwd: '/w', sid: 'me', messages }), null);
   }));
 
 test('planCarry: 没有可接的缓存就安静返回 null', () =>
   withStore((db) => {
-    assert.equal(planCarry(db, { cwd: '/w', sid: 'me', turn: 1, messages: [] }), null);
+    assert.equal(planCarry(db, { cwd: '/w', sid: 'me', messages: [] }), null);
   }));
