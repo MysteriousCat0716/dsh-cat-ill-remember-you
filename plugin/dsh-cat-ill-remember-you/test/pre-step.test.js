@@ -39,7 +39,7 @@ function fakeCtx(cwd) {
 }
 
 /** 准备一个带旧会话缓存的临时库，然后按真实接线跑一次 pre-step。 */
-async function runPreStep({ turn, messages, cwd = '/proj' }) {
+async function runPreStep({ turn, messages, cwd = '/proj', memory = null }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'carry-pre-step-'));
   const file = path.join(dir, 'memory.db');
   const seed = openStore(file);
@@ -59,6 +59,23 @@ async function runPreStep({ turn, messages, cwd = '/proj' }) {
     applied: true,
     cwd,
   });
+  if (memory) {
+    seed
+      .prepare(
+        `INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, tier, t)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?)`,
+      )
+      .run(
+        memory.kind ?? 'fact',
+        'chat',
+        'user',
+        memory.text,
+        memory.summary ?? memory.text.slice(0, 40),
+        JSON.stringify(memory.entities ?? []),
+        JSON.stringify(memory.anchors ?? []),
+        Date.now() - 120_000,
+      );
+  }
   seed.close();
 
   const previous = process.env.DSH_MEMORY_CORE_DB;
@@ -72,7 +89,10 @@ async function runPreStep({ turn, messages, cwd = '/proj' }) {
       { agent: { id: 'new-session' }, messages: decision.messages, step: 1, turn },
       async () => decision,
     );
-    return result;
+    const check = openStore(file);
+    const recallCount = check.prepare('SELECT count(*) AS c FROM recall_log').get().c;
+    check.close();
+    return { decision: result, recallCount };
   } finally {
     harness.dispose();
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_DB;
@@ -84,7 +104,7 @@ async function runPreStep({ turn, messages, cwd = '/proj' }) {
 const userMessage = (text) => ({ role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } });
 
 test('pre-step: 第一轮注入上一个会话的最后缓存', async () => {
-  const result = await runPreStep({ turn: 1, messages: [userMessage('我回来了')] });
+  const { decision: result } = await runPreStep({ turn: 1, messages: [userMessage('我回来了')] });
   const injected = result.messages.filter((message) => message.source?.kind === 'memory-core');
   assert.equal(injected.length, 1);
   assert.ok(injected[0].content[0].text.startsWith(LAST_SESSION_MARK));
@@ -94,7 +114,7 @@ test('pre-step: 第一轮注入上一个会话的最后缓存', async () => {
 });
 
 test('pre-step: 聊过的会话不再注入（turn 从 1 开始也不算新会话）', async () => {
-  const result = await runPreStep({
+  const { decision: result } = await runPreStep({
     turn: 1,
     messages: [
       userMessage('早'),
@@ -106,9 +126,25 @@ test('pre-step: 聊过的会话不再注入（turn 从 1 开始也不算新会�
 });
 
 test('pre-step: 历史里已有标记时不重复注入', async () => {
-  const result = await runPreStep({
+  const { decision: result } = await runPreStep({
     turn: 1,
     messages: [userMessage('我回来了'), userMessage(`${LAST_SESSION_MARK} 上一轮已注入`)],
   });
   assert.equal(result.messages.filter((message) => message.source?.kind === 'memory-core').length, 0);
+});
+
+test('pre-step: 有取回命中时 recall_log 落账（不因 turnNo 漏定义而静默失败）', async () => {
+  const { decision: result, recallCount } = await runPreStep({
+    turn: 1,
+    messages: [userMessage('继续改 lib/carry.js 的判据')],
+    memory: {
+      text: 'carry.js 的新会话判据是会话历史里有没有 assistant 回复',
+      summary: 'carry.js 判据：看会话历史',
+      anchors: ['lib/carry.js'],
+    },
+  });
+  assert.ok(recallCount > 0, 'recall_log 应写入命中记录');
+  const hints = result.messages.filter((message) => message.source?.kind === 'memory-core');
+  assert.ok(hints.length >= 2, '接续缓存与取回提示应各有一条');
+  assert.ok(hints.some((message) => !message.content[0].text.startsWith(LAST_SESSION_MARK)));
 });

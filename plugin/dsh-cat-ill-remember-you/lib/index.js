@@ -156,6 +156,8 @@ export function apply(ctx) {
       if (!db) return decision;
       const sid = String(agent?.id ?? '');
       const extra = [];
+      // 只用于记账：pre-step 的 turn 是进程内轮次，不参与「是不是新会话」的判断。
+      const turnNo = Number(turn) > 0 ? Number(turn) : 0;
 
       // M5：会话第一轮接上同一个 workspace 里上一个会话的最后缓存。
       // 只认真替换过的行（applied=1），那是模型实际读过的接续文本；
