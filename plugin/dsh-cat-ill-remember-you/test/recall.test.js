@@ -84,6 +84,36 @@ test('retrieve: L3 falls back to raw turns only with a referent', () => {
   assert.ok(hits[0].why.includes('产出/插件/foo.js'));
 });
 
+test('retrieve: L3 只回看同一个 workspace 的原文', () => {
+  const db = openStore(':memory:');
+  insertTurn(db, {
+    sid: 'a',
+    seq: 1,
+    role: 'user',
+    cwd: 'C:\\work\\a',
+    text: '产出/插件/foo.js 的结论是先不换缓存。',
+    t: 500,
+  });
+  insertTurn(db, {
+    sid: 'b',
+    seq: 1,
+    role: 'user',
+    cwd: 'D:\\work\\b',
+    text: '产出/插件/foo.js 的结论是换掉缓存。',
+    t: 600,
+  });
+  const hits = retrieve(db, {
+    text: '之前 产出/插件/foo.js 那件事结论是什么',
+    recent: [],
+    now: 1000,
+    cwd: 'C:\\work\\a',
+  });
+  const turns = hits.filter((hit) => hit.source === 'turn');
+  assert.equal(turns.length, 1);
+  assert.ok(turns[0].text.includes('先不换缓存'));
+  db.close();
+});
+
 test('retrieve: L3 does not inject the current message as a past turn', () => {
   const db = openStore(':memory:');
   const text = '刚才那个 lib/recall.js 的缓存问题，现在怎么办？';

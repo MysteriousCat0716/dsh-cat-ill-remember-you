@@ -95,12 +95,21 @@ export function ingestEvent(db, session, event) {
     if (typeof kind === 'string' && kind !== 'user') return 0;
   }
 
+  const headerCwd = session?.header?.cwd;
+  const sessionCwd = session?.cwd;
   return insertTurn(db, {
     sid: String(session?.id ?? 'unknown'),
     seq: finiteNumber(event.seq, 0),
     role,
     origin: role === 'user' ? originOf(message) : 'chat',
-    cwd: typeof session?.header?.cwd === 'string' ? session.header.cwd : '',
+    // 只认可信的工作区字段；两个来源都没有就留空——空 cwd 表示「归属未知」，
+    // 不靠目录名或 sid 反推（反推出来的是错误归属，比接不上更糟）。
+    cwd:
+      typeof headerCwd === 'string' && headerCwd
+        ? headerCwd
+        : typeof sessionCwd === 'string'
+          ? sessionCwd
+          : '',
     text,
     t: finiteNumber(event.time, Date.now()),
   });

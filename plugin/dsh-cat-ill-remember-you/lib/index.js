@@ -184,9 +184,11 @@ export function apply(ctx) {
       // 是不是「第一轮」由 carry.js 看会话历史（surface 里有没有 assistant），
       // 不看 pre-step 的 messages——那只是本轮 claim 到的消息，也不看 turn，
       // 那是进程内轮次（旧会话恢复后也从 1 开始）。
+      // 取会话和 cwd 放在内层 try 外面：retrieve 的 L3 也要用它，
+      // 藏进 carry 的 try 里会变成 ReferenceError 再被外层 catch 吞掉。
+      const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sid) : undefined;
+      const cwd = session?.header?.cwd;
       try {
-        const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sid) : undefined;
-        const cwd = session?.header?.cwd;
         const carry = planCarry(db, { cwd, sid, session, messages: decision.messages });
         if (carry) {
           extra.push(hintMessage(carry));
@@ -200,6 +202,7 @@ export function apply(ctx) {
       if (query) {
         const hits = retrieve(db, {
           text: query,
+          cwd,
           // 当前这句本身不算「已经有什么」，否则 dsh 这类高频实体会把自己挡掉。
           recent: recentTexts(messages).filter((text) => text !== query),
         });

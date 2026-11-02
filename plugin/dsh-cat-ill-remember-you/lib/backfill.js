@@ -1,16 +1,15 @@
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import zlib from 'node:zlib';
 
-const DEFAULT_SESSIONS_ROOT = path.join(os.homedir(), '.dsh', 'sessions');
+import { DEFAULT_SESSIONS_ROOT, readSessionEvents } from './originals.js';
 
 /**
  * Read the workspace a session directory belongs to.
  *
  * 目录名把 cwd 里的分隔符压成 `-`，反解不回去（`C-Users` 还是 `C:\Users` 靠猜），
- * 所以以会话文件首行（`{"type":"session",...,"cwd":...}`）为准。只读一个文件，
- * 只为回填旧数据服务，不参与每轮热路径。
+ * 所以以会话文件首行（`{"type":"session",...,"cwd":...}`）为准。走 readSessionEvents
+ * 是为了复用它的 30MB 上限与损坏文件日志——回填虽然只跑一次，解压同样是同步的，
+ * 一个坏掉的大文件会把启动卡住。
  *
  * @param {string} dir session 目录，里面是 `session.v4.jsonl.zstd`
  * @returns {string} cwd，读不到时返回空串
@@ -25,8 +24,7 @@ function cwdOfSessionDir(dir) {
   for (const name of names) {
     if (!name.endsWith('.zstd')) continue;
     try {
-      const text = zlib.zstdDecompressSync(fs.readFileSync(path.join(dir, name))).toString('utf8');
-      const header = JSON.parse(text.split('\n', 1)[0]);
+      const header = readSessionEvents(path.join(dir, name))[0];
       if (typeof header?.cwd === 'string' && header.cwd) return header.cwd;
     } catch {
       /* 损坏的会话文件：这个 sid 留空，下次还能再试 */

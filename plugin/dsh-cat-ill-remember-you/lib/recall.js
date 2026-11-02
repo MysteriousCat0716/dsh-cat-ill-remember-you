@@ -155,9 +155,9 @@ function inKnown(item, known) {
 /**
  * Three-level recall. Returns at most two gated hits.
  * @param {import('node:sqlite').DatabaseSync} db
- * @param {{text:string, recent?:string[], now?:number}} input
+ * @param {{text:string, recent?:string[], now?:number, cwd?:string}} input
  */
-export function retrieve(db, { text, recent = [], now = Date.now() } = {}) {
+export function retrieve(db, { text, recent = [], now = Date.now(), cwd = '' } = {}) {
   const query = queryOf(text);
   const known = knownOf(recent);
   const seen = new Set();
@@ -272,12 +272,16 @@ export function retrieve(db, { text, recent = [], now = Date.now() } = {}) {
     if (terms.length) {
       const clauses3 = terms.map(() => "text LIKE ? ESCAPE '\\'").join(' OR ');
       const values = terms.map((term) => `%${escapeLike(term)}%`);
+      // 原文层只回看同一个 workspace：别的项目的会话尾巴不是「我们说过」。
+      // cwd 缺失（老会话、拿不到 header）时退回旧行为，宁可少过滤也不把这层变哑。
+      const cwdClause = cwd ? ' AND cwd = ?' : '';
+      const cwdParams = cwd ? [cwd] : [];
       const rows = db
         .prepare(
           `SELECT id, sid, seq, role, text, t FROM turns
-           WHERE origin = 'chat' AND (${clauses3}) AND t >= ? ORDER BY t DESC LIMIT 6`,
+           WHERE origin = 'chat'${cwdClause} AND (${clauses3}) AND t >= ? ORDER BY t DESC LIMIT 6`,
         )
-        .all(...values, now - TURN_WINDOW_MS);
+        .all(...cwdParams, ...values, now - TURN_WINDOW_MS);
       for (const row of rows) {
         const text = String(row.text ?? '');
         // The current message is already in `turns`; pasting it back as "what
