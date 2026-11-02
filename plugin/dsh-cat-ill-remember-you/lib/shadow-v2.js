@@ -314,13 +314,23 @@ export function applyReplacement(session, replaced, text, sid) {
   if (!Array.isArray(replaced) || replaced.length === 0) return false;
   if (typeof session?.append !== 'function') return false;
   const startSeq = replaced[0].seq;
-  const endSeq = replaced.at(-1).seq;
   const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes : [];
   // 按位置取区间，不按 seq 值过滤：早先替换块的 seq 比它所在位置大，会夹在
   // 后续区间中间。值过滤会把它漏掉，而宿主按位置判断 shadowedSeqs，报 missing。
   const startIdx = nodes.indexOf(startSeq);
-  const endIdx = nodes.indexOf(endSeq);
+  let endIdx = nodes.indexOf(replaced.at(-1).seq);
   if (startIdx < 0 || endIdx < startIdx) return false;
+  // 遮蔽区间不能切在 assistant 消息和它的 tool/call 之间：消息被换掉、
+  // tool/call 还留在表面上，后端会收到没有对应调用的 tool 结果
+  // （DeepSeek: Messages tool result has no matching call）。
+  for (;;) {
+    const nextSeq = nodes[endIdx + 1];
+    const nextEvent = nextSeq == null ? undefined : session.eventAt?.(nextSeq);
+    if (!nextEvent || nextEvent.type !== 'tool/call') break;
+    endIdx -= 1;
+    if (endIdx < startIdx) return false;
+  }
+  const endSeq = nodes[endIdx];
   const seqs = nodes.slice(startIdx, endIdx + 1);
   if (seqs.length === 0) return false;
   try {

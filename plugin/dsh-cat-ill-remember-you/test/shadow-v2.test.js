@@ -466,3 +466,42 @@ test('planShadowV2: 白名单内 apply 失败后同区间下一轮会重试，�
     db.close();
   }
 });
+
+test('applyReplacement: 区间终点不切在 assistant 与它的 tool/call 之间', () => {
+  const events = new Map([
+    [1, { seq: 1, type: 'user/message', role: 'user', content: [{ type: 'text', text: 'a' }] }],
+    [2, { seq: 2, type: 'assistant/message', role: 'assistant', content: [{ type: 'text', text: 'b' }] }],
+    [3, { seq: 3, type: 'tool/call' }],
+  ]);
+  const appended = [];
+  const session = {
+    id: 'sid-tool-cut',
+    surface: { nodes: [1, 2, 3] },
+    eventAt: (seq) => events.get(seq),
+    deriveEventMessage: (event) => (event?.content ? { role: event.role, content: event.content } : undefined),
+    append: (type, data, options) => {
+      appended.push({ type, data, options });
+    },
+  };
+  const list = tempSessionList(['sid-tool-cut']);
+  const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  try {
+    const ok = applyReplacement(
+      session,
+      [
+        { seq: 1, role: 'user', text: 'a' },
+        { seq: 2, role: 'assistant', text: 'b' },
+      ],
+      '摘要',
+      'sid-tool-cut',
+    );
+    assert.equal(ok, true);
+    assert.equal(appended.length, 1);
+    assert.equal(appended[0].options.surfaceOp.endSeq, 1);
+  } finally {
+    if (previousList === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
+    list.cleanup();
+  }
+});
