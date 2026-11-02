@@ -244,6 +244,8 @@ test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', as
     );
     assert.deepEqual(call.options.sourceEventSeqs, nodes);
     assert.equal(call.data.source.kind, 'context-replacement');
+    // 宿主 assertMessageEventShape 要求带非空字符串 id，缺了会话会被判 corrupt。
+    assert.ok(typeof call.data.id === 'string' && call.data.id.length > 0);
     assert.ok(call.data.content[0].text.length <= MAX_REPLACE_CHARS);
   } finally {
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;

@@ -13,6 +13,7 @@
 
 import { anchorsOf, entitiesOf } from './extract.js';
 import { INJECT_RE } from './ingest.js';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -307,6 +308,9 @@ export function applyReplacement(session, replaced, text, sid) {
     session.append(
       'user/message',
       {
+        // 宿主 assertMessageEventShape 要求 user/message 的 data 本身是一条带
+        // id/role/source/content 的消息，缺 id 会让整个会话判 corrupt。
+        id: randomUUID(),
         role: 'user',
         content: [{ type: 'text', text }],
         // 宿主投影会对每条 surface 消息读 source.kind（runtime-context 判断归属），
