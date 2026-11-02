@@ -139,6 +139,109 @@ test('retrieve: memories from an IM channel are not injected', () => {
   db.close();
 });
 
+// —— v0.2.0 分区取回：persona / people / tools ——
+
+test('persona: preferences are injected even when the turn is unrelated', () => {
+  const db = openStore(':memory:');
+  db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('preference', '猫不喜欢豆包味的通用句', '不要豆包味的通用句', '[]', '[]', '规则提炼：preference', 'active', 1000)`,
+  ).run();
+  const hits = retrieve(db, { text: '今天天气不错', recent: [] });
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].section, 'persona');
+  assert.ok(hits[0].summary.includes('豆包'));
+  db.close();
+});
+
+test('persona: total stays within 300 characters', () => {
+  const db = openStore(':memory:');
+  const stmt = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('preference', ?, ?, '[]', '[]', '规则提炼：preference', 'active', ?)`,
+  );
+  for (let i = 0; i < 10; i += 1) stmt.run(`第 ${i} 条偏好`, '偏'.repeat(50), 1000 + i);
+  const hits = retrieve(db, { text: '无关', recent: [] });
+  const persona = hits.filter((hit) => hit.section === 'persona');
+  assert.ok(persona.length <= 8);
+  assert.ok(persona.reduce((sum, hit) => sum + hit.summary.length, 0) <= 300);
+  db.close();
+});
+
+test('persona: a plain decision without a relation cue stays out', () => {
+  const db = makeDb();
+  const hits = retrieve(db, { text: '今天天气不错', recent: [] });
+  assert.equal(hits.filter((hit) => hit.section === 'persona').length, 0);
+  db.close();
+});
+
+test('people: an entity mentioned this turn pulls at most one related memory', () => {
+  const db = openStore(':memory:');
+  const stmt = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('fact', ?, ?, ?, '[]', '规则提炼：fact', 'active', ?)`,
+  );
+  stmt.run('猫说缓存方案要换', '猫的缓存方案', JSON.stringify(['猫']), 1000);
+  stmt.run('另一件关于猫的事', '另一件关于猫的事', JSON.stringify(['猫']), 2000);
+  const hits = retrieve(db, { text: '猫之前说过的那个方案还要改吗', recent: [] });
+  const people = hits.filter((hit) => hit.section === 'people');
+  assert.equal(people.length, 1);
+  assert.ok(people[0].why.includes('猫'));
+  db.close();
+});
+
+test('tools: a path anchor pulls the memory that records its usage', () => {
+  const db = openStore(':memory:');
+  db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('fact', '跑测试要串 --experimental-test-isolation=none', '测试要串 isolation 参数', '[]', ?, '规则提炼：fact', 'active', 1000)`,
+  ).run(JSON.stringify(['产出/插件/foo.js']));
+  const hits = retrieve(db, { text: '产出/插件/foo.js 这个文件还要改吗', recent: [] });
+  const tools = hits.filter((hit) => hit.section === 'tools');
+  assert.equal(tools.length, 1);
+  assert.ok(tools[0].why.includes('产出/插件/foo.js'));
+  db.close();
+});
+
+test('sections: people and tools each take at most one of the two slots', () => {
+  const db = openStore(':memory:');
+  const mem = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('fact', ?, ?, ?, ?, '规则提炼：fact', 'active', ?)`,
+  );
+  mem.run('猫说 foo.js 上次的坑', '猫说 foo.js 的坑', JSON.stringify(['猫']), JSON.stringify(['产出/插件/foo.js']), 1000);
+  mem.run('另一件猫的事', '另一件猫的事', JSON.stringify(['猫']), JSON.stringify([]), 2000);
+  mem.run('另一件 foo.js 的事', '另一件 foo.js 的事', JSON.stringify([]), JSON.stringify(['产出/插件/foo.js']), 3000);
+  const hits = retrieve(db, { text: '产出/插件/foo.js 猫之前说的那个坑还记得吗', recent: [] });
+  assert.ok(hits.filter((hit) => hit.section === 'people').length <= 1);
+  assert.ok(hits.filter((hit) => hit.section === 'tools').length <= 1);
+  assert.ok(hits.length <= 2);
+  db.close();
+});
+
+test('persona: a preference is not fetched twice by the on-demand layers', () => {
+  const db = openStore(':memory:');
+  db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('preference', '关于 产出/插件/foo.js 的偏好', '关于 foo.js 的偏好', '[]', ?, '规则提炼：preference', 'active', 1000)`,
+  ).run(JSON.stringify(['产出/插件/foo.js']));
+  const hits = retrieve(db, { text: '产出/插件/foo.js 还要改吗', recent: [] });
+  const persona = hits.filter((hit) => hit.section === 'persona');
+  assert.equal(persona.length, 1);
+  assert.equal(hits.filter((hit) => hit.section !== 'persona' && hit.id === persona[0].id).length, 0);
+  db.close();
+});
+
+test('renderHint: persona and on-demand hits get separate sections', () => {
+  const text = renderHint([
+    { kind: 'preference', summary: '不要豆包味', t: Date.UTC(2026, 10, 2), section: 'persona' },
+    { kind: 'fact', summary: '缓存层要换掉', t: Date.UTC(2026, 10, 2) },
+  ]);
+  assert.ok(text.includes('[常驻]'));
+  assert.ok(text.includes('[这轮]'));
+  assert.ok(text.indexOf('[常驻]') < text.indexOf('[这轮]'));
+});
+
 test('renderHint: renders a gated hint and nothing when empty', () => {
   assert.equal(renderHint([]), '');
   const text = renderHint([{ kind: 'user', summary: '缓存层要换掉', t: Date.UTC(2026, 10, 2) }]);

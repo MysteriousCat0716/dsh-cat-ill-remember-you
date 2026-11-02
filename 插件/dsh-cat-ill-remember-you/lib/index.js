@@ -9,6 +9,7 @@ import { ingestEvent, textOf } from './ingest.js';
 import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { forgetSweep } from './forget.js';
+import { embedPending } from './embed.js';
 
 export const name = 'dsh-cat-ill-remember-you';
 
@@ -203,6 +204,8 @@ export function apply(ctx) {
   // M1：空闲 5 分钟且有待提炼的轮次时，跑一次规则提炼。
   // 每次只处理最老的 40 条，避免长对话积压时一次卡住事件循环。
   let refining = false;
+  let embedding = false;
+  let embedRetryAt = 0;
   let lastForget = 0;
   const DAY = 24 * 60 * 60 * 1000;
 
@@ -227,14 +230,32 @@ export function apply(ctx) {
       }
     }
     try {
-      if (pendingCount(db) === 0) return;
-      refining = true;
-      const result = refine(db);
-      log(`refine turns=${result.turns} memories=${result.memories}`);
+      if (pendingCount(db) > 0) {
+        refining = true;
+        const result = refine(db);
+        log(`refine turns=${result.turns} memories=${result.memories}`);
+      }
     } catch (error) {
       log(`refine failed: ${error?.message ?? error}`);
     } finally {
       refining = false;
+    }
+    // 向量索引：只补缺的几条；Ollama 不可用时退避 10 分钟再试，不阻塞下一轮。
+    if (!embedding && Date.now() >= embedRetryAt) {
+      embedding = true;
+      embedPending(db)
+        .then((result) => {
+          if (result.embedded > 0) {
+            log(`embed +${result.embedded} model=${result.model} dim=${result.dim}`);
+          }
+        })
+        .catch((error) => {
+          embedRetryAt = Date.now() + 10 * 60 * 1000;
+          log(`embed failed: ${error?.message ?? error}`);
+        })
+        .finally(() => {
+          embedding = false;
+        });
     }
     }, tickMs);
     timer.unref?.();
