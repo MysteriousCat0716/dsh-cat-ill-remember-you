@@ -169,14 +169,12 @@ export function recentSessionOriginals({
     }
     if (events.length === 0) continue;
     // 子代理的会话也是文件，但那是任务现场，不是「上一个会话」。
-    // 主会话的目录名是 `session-*`；子会话要么带 parentSession，要么是
-    // `origin=subagent` 的无前缀 uuid。只看 origin 不够：主会话可能没有
-    // origin 字段，新版本也可能给主会话标 subagent。
+    // 判据只用 origin === 'subagent'：宿主源码里这才是「作为子代理创建」
+    // （dsh-session/lib/types/index.js:950-959）。`session-` 前缀不是判据——
+    // store mint session-<counter>、Web/fork 用 session-<uuid>、子代理可用裸
+    // uuid；fork 只设 parentSession、不设 origin，它是用户自己的分支，应该能接。
     const header = events[0] ?? {};
-    const hasParent = typeof header.parentSession === 'string' && header.parentSession.length > 0;
-    if (hasParent) continue;
-    const origin = header.origin;
-    if (origin === 'subagent' && !item.sid.startsWith('session-')) continue;
+    if (header.origin === 'subagent') continue;
     const messages = messagesFromEvents(events);
     if (messages.length === 0) continue;
     return { sid: item.sid, mtime: item.mtime, messages: messages.slice(-Math.max(1, limit)) };

@@ -105,7 +105,7 @@ test('recentSessionOriginals 取最近、排除自己、跳过没有原文的会
   }
 });
 
-test('recentSessionOriginals 用 session- 前缀认主会话，跳过子代理', () => {
+test('recentSessionOriginals 只跳过 origin=subagent，fork 会话照接', () => {
   const root = tempRoot();
   try {
     const cwd = 'C:\\\\w';
@@ -114,10 +114,10 @@ test('recentSessionOriginals 用 session- 前缀认主会话，跳过子代理',
       { type: 'session', seq: 0, origin: 'subagent', data: { id: 'aaaaaaaa' } },
       userEvent(1, '子代理现场'),
     ]);
-    // 主会话：session- 前缀。宿主也可能给主会话标 origin=subagent，不能因此漏掉
-    writeSession(root, 'session-bbbb', cwd, [
-      { type: 'session', seq: 0, origin: 'subagent', data: { id: 'session-bbbb' } },
-      userEvent(1, '主会话'),
+    // fork：只带 parentSession、不带 origin，是用户自己的分支，应该能接
+    writeSession(root, 'session-cccc', cwd, [
+      { type: 'session', seq: 0, data: { id: 'session-cccc', parentSession: 'session-parent' } },
+      userEvent(1, 'fork 出来的分支'),
     ]);
     const found = recentSessionOriginals({
       cwd,
@@ -125,8 +125,8 @@ test('recentSessionOriginals 用 session- 前缀认主会话，跳过子代理',
       sessionsRoot: root,
     });
     assert.ok(found);
-    assert.equal(found.sid, 'session-bbbb');
-    assert.deepEqual(found.messages.map((m) => m.text), ['主会话']);
+    assert.equal(found.sid, 'session-cccc');
+    assert.deepEqual(found.messages.map((m) => m.text), ['fork 出来的分支']);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
