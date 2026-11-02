@@ -19,6 +19,16 @@ import { surfaceMessages } from './shadow-v2.js';
 export const LAST_SESSION_MARK = '[上次会话结尾]';
 export const LAST_SESSION_MAX_CHARS = 1600;
 
+/**
+ * 接续失败时不再静默：index.js 会把插件日志函数传进来。
+ * 以前这里只 return null，日志里只剩一句「recall failed」，分不清是
+ * 「没有别的会话」还是「库读不出来」——2026-11-03 排障时就卡在这。
+ */
+let warn = () => {};
+export function setCarryLogger(fn) {
+  warn = typeof fn === 'function' ? fn : () => {};
+}
+
 /** @param {string} text @param {number} maxChars */
 export function clipText(text, maxChars = LAST_SESSION_MAX_CHARS) {
   const s = String(text ?? '').trim();
@@ -50,8 +60,9 @@ export function lastSessionCache(db, { cwd, sid, maxChars = LAST_SESSION_MAX_CHA
          ORDER BY t DESC, id DESC LIMIT 1`,
       )
       .get(cwd, String(sid ?? ''));
-  } catch {
+  } catch (error) {
     // 老库还没有 cwd 列时不要打断会话；升级失败就当接不上。
+    warn(`carry: read shadow cache failed: ${error?.message ?? error}`);
     return null;
   }
   if (!row || typeof row.text !== 'string' || row.text.trim() === '') return null;
@@ -171,7 +182,8 @@ export function lastCarry(db, sid, fromSid) {
       .prepare('SELECT from_seq FROM carry_log WHERE sid = ? AND from_sid = ?')
       .get(String(sid ?? ''), String(fromSid ?? ''));
     return row ? Number(row.from_seq) || 0 : 0;
-  } catch {
+  } catch (error) {
+    warn(`carry: read carry_log failed: ${error?.message ?? error}`);
     return 0;
   }
 }
@@ -189,8 +201,9 @@ export function rememberCarry(db, sid, fromSid, fromSeq) {
       `INSERT INTO carry_log (sid, from_sid, from_seq, t) VALUES (?, ?, ?, ?)
        ON CONFLICT (sid, from_sid) DO UPDATE SET from_seq = excluded.from_seq, t = excluded.t`,
     ).run(String(sid ?? ''), String(fromSid ?? ''), Number(fromSeq) || 0, Date.now());
-  } catch {
+  } catch (error) {
     // 记账失败不影响本轮注入
+    warn(`carry: write carry_log failed: ${error?.message ?? error}`);
   }
 }
 
@@ -228,7 +241,8 @@ export function recentTurnsBySession(db, { sid, limit = 6, maxSessions = MAX_CAR
     }
     out.sort((a, b) => b.mtime - a.mtime);
     return out.slice(0, Math.max(1, maxSessions));
-  } catch {
+  } catch (error) {
+    warn(`carry: read turns failed: ${error?.message ?? error}`);
     return [];
   }
 }
@@ -304,7 +318,8 @@ export function planCarry(
   let tail = null;
   try {
     tail = recentSessionOriginals({ cwd, excludeSid: sid, limit: 6, sessionsRoot });
-  } catch {
+  } catch (error) {
+    warn(`carry: read session originals failed: ${error?.message ?? error}`);
     tail = null;
   }
   if (tail && tail.messages.length > 0) {

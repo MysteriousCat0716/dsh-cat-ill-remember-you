@@ -16,6 +16,15 @@ export const DEFAULT_SESSIONS_ROOT = join(homedir(), '.dsh', 'sessions');
 export const MAX_ORIGINAL_FILE_BYTES = 30 * 1024 * 1024;
 
 /**
+ * 读不到原文时不再静默：carry.js 会把插件日志函数转进来。
+ * 不存在的文件属于正常情况（没有别的会话），只有解压/读取失败才记。
+ */
+let warn = () => {};
+export function setOriginalsLogger(fn) {
+  warn = typeof fn === 'function' ? fn : () => {};
+}
+
+/**
  * 工作区目录名：cwd 里所有非字母数字压成一个 `-`，首尾各补 `--`。
  * 例：`C:\Users\...\default-workspace` → `--C-Users-...-default-workspace--`。
  */
@@ -51,7 +60,8 @@ export function readSessionEvents(file) {
       }
     }
     return events;
-  } catch {
+  } catch (error) {
+    warn(`originals: read ${file} failed: ${error?.message ?? error}`);
     return [];
   }
 }
@@ -119,7 +129,8 @@ export function recentSessionOriginals({
   let dirents;
   try {
     dirents = readdirSync(root, { withFileTypes: true });
-  } catch {
+  } catch (error) {
+    warn(`originals: list ${root} failed: ${error?.message ?? error}`);
     return null;
   }
   const files = [];
