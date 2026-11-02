@@ -20,6 +20,8 @@ import path from 'node:path';
 export const DEFAULT_KEEP = 10;
 export const DEFAULT_WINDOW = 40;
 export const MAX_REPLACE_CHARS = 600;
+// 收益门槛：替换文本要比被换原文明显短才值得真换。
+export const REPLACE_GAIN = 0.7;
 
 /** 读整数环境变量；空值或非法值回落到默认。 */
 function envInt(name, fallback) {
@@ -369,7 +371,10 @@ export function planShadowV2(
   // 重入 append 会被拒绝。推到微任务，等 appending 标志落下再写。
   queueMicrotask(() => {
     try {
-      if (applyReplacement(session, replaced, text, sid)) {
+      // 收益门槛：替换文本要比原文明显短才动手。固定头（关键词/约定）在短对话
+      // 上会把 88 字撑成 149 字，换完反而更长，这种只记账不真换。
+      const worthIt = text.length < charsBefore * REPLACE_GAIN;
+      if (worthIt && applyReplacement(session, replaced, text, sid)) {
         db.prepare('UPDATE shadow_v2 SET applied = 1 WHERE id = ?').run(Number(info.lastInsertRowid));
       }
     } catch {

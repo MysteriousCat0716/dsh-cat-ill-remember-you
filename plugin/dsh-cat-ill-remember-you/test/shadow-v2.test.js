@@ -214,7 +214,13 @@ test('planShadowV2: 默认不真替换（REPLACE 关）', async () => {
 
 test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', async () => {
   const db = openStore(':memory:');
-  const session = fakeSession(textEntries('消息', 14), 'sid-replace');
+  // 原文要够长，替换文本才明显短于窗口（收益门槛 0.7）。
+  const longEntries = Array.from({ length: 14 }, (_, i) => [
+    i + 1,
+    i % 2 === 0 ? 'user' : 'assistant',
+    `消息 第 ${i + 1} 条 ` + '这是一段比较长的原文，用来让替换文本明显短于被换窗口。'.repeat(10),
+  ]);
+  const session = fakeSession(longEntries, 'sid-replace');
   const previous = process.env.DSH_MEMORY_CORE_REPLACE;
   const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
   const list = tempSessionList(['sid-replace']);
@@ -239,6 +245,31 @@ test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', as
     assert.deepEqual(call.options.sourceEventSeqs, nodes);
     assert.equal(call.data.source.kind, 'context-replacement');
     assert.ok(call.data.content[0].text.length <= MAX_REPLACE_CHARS);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;
+    else process.env.DSH_MEMORY_CORE_REPLACE = previous;
+    if (previousList === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
+    list.cleanup();
+    db.close();
+  }
+});
+
+test('planShadowV2: 收益不够（替换文本不比原文明显短）时不真换', async () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 14), 'sid-replace');
+  const previous = process.env.DSH_MEMORY_CORE_REPLACE;
+  const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  const list = tempSessionList(['sid-replace']);
+  process.env.DSH_MEMORY_CORE_REPLACE = '1';
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  try {
+    const plan = planShadowV2(session, db, { keep: 10, now: 1 });
+    assert.ok(plan);
+    await tick();
+    assert.equal(session.appended.length, 0);
+    const row = db.prepare('SELECT applied FROM shadow_v2 ORDER BY id DESC LIMIT 1').get();
+    assert.equal(Number(row.applied), 0);
   } finally {
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;
     else process.env.DSH_MEMORY_CORE_REPLACE = previous;
