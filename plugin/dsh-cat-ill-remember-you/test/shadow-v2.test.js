@@ -237,6 +237,7 @@ test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', as
       (seq) => seq >= plan.rangeStart && seq <= plan.rangeEnd,
     );
     assert.deepEqual(call.options.sourceEventSeqs, nodes);
+    assert.equal(call.data.source.kind, 'context-replacement');
     assert.ok(call.data.content[0].text.length <= MAX_REPLACE_CHARS);
   } finally {
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE;

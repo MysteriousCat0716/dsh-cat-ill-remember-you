@@ -304,7 +304,13 @@ export function applyReplacement(session, replaced, text, sid) {
   try {
     session.append(
       'user/message',
-      { role: 'user', content: [{ type: 'text', text }] },
+      {
+        role: 'user',
+        content: [{ type: 'text', text }],
+        // 宿主投影会对每条 surface 消息读 source.kind（runtime-context 判断归属），
+        // 缺 source 会让整个会话加载时报 `Cannot read properties of undefined`。
+        source: { kind: 'context-replacement' },
+      },
       { surfaceOp: { op: 'replace', startSeq, endSeq }, sourceEventSeqs: seqs },
     );
     return true;
