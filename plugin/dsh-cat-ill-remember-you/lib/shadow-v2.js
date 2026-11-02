@@ -282,16 +282,24 @@ export function planShadowV2(
   const cap = Math.max(1, Math.floor(Number(window) || DEFAULT_WINDOW));
   const replaced = older.slice(-cap);
   if (replaced.length === 0) return null;
+  const sid = String(session?.id ?? session?.sessionId ?? 'unknown');
+  const rangeStart = replaced[0].seq;
+  const rangeEnd = replaced.at(-1).seq;
+  // 同一区间不重复记账：每轮都会重算，但被换的窗口没动就没新信息。
+  const last = db
+    .prepare('SELECT range_start, range_end FROM shadow_v2 WHERE sid = ? ORDER BY id DESC LIMIT 1')
+    .get(sid);
+  if (last && last.range_start === rangeStart && last.range_end === rangeEnd) return null;
   const text = renderReplacement(replaced);
   const assessment = assessReplacement({ replaced, kept, text });
   const charsBefore = replaced.reduce((total, entry) => total + entry.text.length, 0);
   const applied = applyReplacement(session, replaced, text);
   const row = {
-    sid: String(session?.id ?? session?.sessionId ?? 'unknown'),
+    sid,
     turn: 0,
     t: now,
-    rangeStart: replaced[0].seq,
-    rangeEnd: replaced.at(-1).seq,
+    rangeStart,
+    rangeEnd,
     seqs: JSON.stringify(replaced.map((entry) => entry.seq)),
     text,
     charsBefore,

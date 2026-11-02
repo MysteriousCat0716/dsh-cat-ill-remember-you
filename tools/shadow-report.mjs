@@ -40,15 +40,51 @@ const appliedRows = rows.filter((r) => Number(r.applied) > 0);
 const sids = new Map();
 for (const r of rows) sids.set(r.sid, (sids.get(r.sid) ?? 0) + 1);
 
+// 丢的是什么：按类型数一数原文里出现过多少、替换文本里还剩多少
+const PAT = {
+  path: /[A-Za-z]:[\\/][^\s，。；、）)\]]+|[^\s，。；、）)\]]+\.(?:mjs|js|cjs|ts|json|md|yml|yaml|txt|zip|png|jpg|py)\b/g,
+  msg: /\bm\d{5}\b/g,
+  name: /(?:猫|岸姐|岸)/g,
+  promise: /(?:不要|记住|以后|约定|答应|下次|别再)/g,
+};
+const kinds = [
+  ['path', '文件路径/命令'],
+  ['msg', '消息号 mXXXXX'],
+  ['name', '人名（猫/岸）'],
+  ['promise', '约定词（不要/记住/以后）'],
+];
+const hit = (s, re) => (s.match(re) ?? []).length;
+const turnStmt = db.prepare(
+  'SELECT seq, role, text FROM turns WHERE sid = ? AND seq >= ? AND seq <= ? ORDER BY seq',
+);
+const tally = Object.fromEntries(kinds.map(([k]) => [k, { src: 0, rep: 0 }]));
+for (const r of rows) {
+  const src = turnStmt.all(r.sid, r.range_start, r.range_end).map((x) => x.text ?? '').join('\n');
+  const rep = String(r.text ?? '');
+  for (const [k] of kinds) {
+    tally[k].src += hit(src, PAT[k]);
+    tally[k].rep += hit(rep, PAT[k]);
+  }
+}
+
 const lines = [
   `# 影子账本日报 · 最近 ${rows.length} 行`,
   '',
   `- 全库累计：**${total}** 行`,
   `- 时间跨度：${rows.length ? `${when(rows.at(-1).t)} → ${when(rows[0].t)}` : '—'}`,
   `- 被换原文平均：**${Math.round(avg(before)).toLocaleString()}** 字 → 替换文本平均 **${Math.round(avg(after))}** 字`,
-  `- 平均保留率：**${pct(avg(lost))}**（被换内容里锚点/实体还剩多少）`,
+  `- 平均丢失率：**${pct(avg(lost))}**（被换内容里锚点/实体 token 没进替换文本的比例；0% = 全部钉住）`,
   `- 断链行：**${danglingRows.length} / ${rows.length}**（${pct(danglingRows.length / Math.max(1, rows.length))}）`,
   `- 真替换写入：**${appliedRows.length}** 行（开关默认关，应为 0）`,
+  '',
+  '## 丢的是什么（最近 N 行合计）',
+  '',
+  '| 类型 | 原文出现 | 替换后保留 | 保留比 |',
+  '| --- | --- | --- | --- |',
+  ...kinds.map(([k, label]) => {
+    const { src, rep } = tally[k];
+    return `| ${label} | ${src} | ${rep} | ${src ? pct(rep / src) : '—'} |`;
+  }),
   '',
   '## 会话分布',
   '',
