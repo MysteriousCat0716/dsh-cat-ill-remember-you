@@ -132,22 +132,33 @@ export function openStore(file = DEFAULT_DB_FILE) {
     const db = new DatabaseSync(file, { readOnly: true });
     try {
       const row = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'turns'")
+        .prepare(
+          "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('turns', 'memories')",
+        )
         .get();
-      if (!row) throw new Error(`not an illrememberyou store: ${file}`);
+      if (Number(row?.n ?? 0) < 2) throw new Error(`not an illrememberyou store: ${file}`);
     } finally {
       db.close();
     }
   }
   const db = new DatabaseSync(file);
-  db.exec('PRAGMA foreign_keys = ON');
-  if (file !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
-  db.exec(SCHEMA);
-  ensureColumn(db, 'turns', 'origin', "TEXT NOT NULL DEFAULT 'chat'");
-  ensureColumn(db, 'memories', 'origin', "TEXT NOT NULL DEFAULT 'chat'");
-  ensureColumn(db, 'memories', 'subject', "TEXT NOT NULL DEFAULT 'user'");
-  ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
-  return db;
+  try {
+    db.exec('PRAGMA foreign_keys = ON');
+    if (file !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
+    db.exec(SCHEMA);
+    ensureColumn(db, 'turns', 'origin', "TEXT NOT NULL DEFAULT 'chat'");
+    ensureColumn(db, 'memories', 'origin', "TEXT NOT NULL DEFAULT 'chat'");
+    ensureColumn(db, 'memories', 'subject', "TEXT NOT NULL DEFAULT 'user'");
+    ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
+    return db;
+  } catch (error) {
+    try {
+      db.close();
+    } catch {
+      /* already closed */
+    }
+    throw error;
+  }
 }
 
 /**

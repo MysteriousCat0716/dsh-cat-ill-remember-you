@@ -1,9 +1,20 @@
 import { insertTurn } from './db.js';
 
 /** Fallback filter for old events that carry no `source` field. */
-const INJECT_RE = /^\s*(\[记忆提示\]|\[MEMORY HINT\]|\[inject-guard\]|\[记忆注入\]|\[记忆召回\]|MNEMON RUNTIME MEMORY SNAPSHOT|\[Compressed conversation section\]|\[dsh-mnemon|<system-reminder>|<runtime-memory-file)/;
+const INJECT_RE = /^\s*(\[记忆\]|\[记忆提示\]|\[MEMORY HINT\]|\[inject-guard\]|\[记忆注入\]|\[记忆召回\]|MNEMON RUNTIME MEMORY SNAPSHOT|\[Compressed conversation section\]|\[dsh-mnemon|<system-reminder>|<runtime-memory-file)/;
+
+/** A single turn is capped so one pasted log cannot bloat the store. */
+const MAX_TURN_CHARS = 200_000;
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Recognised bridge prefixes. Anything else non-UUID stays 'unknown'. */
+const IM_PREFIX = /^(?:ds-bot-|qq_|feishu_|telegram_|discord_|wechat_)/i;
+
+/** node:sqlite binds NaN as NULL; fall back instead of poisoning NOT NULL columns. */
+function finiteNumber(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
 
 /**
  * Which channel a user message came from.
@@ -16,8 +27,15 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
  */
 export function originOf(message) {
   const rpcId = message?.source?.rpcId;
-  if (typeof rpcId !== 'string' || rpcId.trim() === '') return 'unknown';
-  return UUID_RE.test(rpcId.trim()) ? 'chat' : 'im';
+  if (typeof rpcId !== 'string') return 'unknown';
+  const id = rpcId.trim();
+  if (id === '') return 'unknown';
+  if (UUID_RE.test(id)) return 'chat';
+  // Only known bridge prefixes count as IM; an unrecognised non-UUID id
+  // stays 'unknown', so a bridge that reuses a UUID cannot be mistaken for
+  // the owner typing in the desktop chat.
+  if (IM_PREFIX.test(id)) return 'im';
+  return 'unknown';
 }
 
 /**
@@ -65,7 +83,7 @@ export function ingestEvent(db, session, event) {
     return 0;
   }
 
-  const text = textOf(message).trim();
+  const text = textOf(message).trim().slice(0, MAX_TURN_CHARS);
   if (!text) return 0;
 
   if (role === 'user') {
@@ -78,10 +96,10 @@ export function ingestEvent(db, session, event) {
 
   return insertTurn(db, {
     sid: String(session?.id ?? 'unknown'),
-    seq: Number(event.seq ?? 0),
+    seq: finiteNumber(event.seq, 0),
     role,
     origin: role === 'user' ? originOf(message) : 'chat',
     text,
-    t: Number(event.time ?? Date.now()),
+    t: finiteNumber(event.time, Date.now()),
   });
 }

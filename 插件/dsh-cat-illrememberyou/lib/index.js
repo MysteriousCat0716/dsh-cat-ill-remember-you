@@ -70,7 +70,10 @@ function log(line) {
  */
 export function apply(ctx) {
   let store;
+  let timer = null;
   let lastActivity = Date.now();
+  const idleMs = Number(process.env.DSH_MEMORY_CORE_IDLE_MS ?? 5 * 60 * 1000);
+  const tickMs = Number(process.env.DSH_MEMORY_CORE_TICK_MS ?? 60 * 1000);
   const file = process.env.DSH_MEMORY_CORE_DB || undefined;
 
   /** Reopen if the host disposed the store under us; null when the db is unusable. */
@@ -100,12 +103,14 @@ export function apply(ctx) {
   }
 
   if (!currentStore()) return;
+  startTimer();
 
   ctx.on('session/event', (session, event) => {
     lastActivity = Date.now();
     try {
       const db = currentStore();
       if (!db) return;
+      startTimer();
       const inserted = ingestEvent(db, session, event);
       if (event?.type === 'user/message' || event?.type === 'assistant/message') {
         log(`${event.type} seq=${event.seq} inserted=${inserted}`);
@@ -170,12 +175,16 @@ export function apply(ctx) {
 
   // M1：空闲 5 分钟且有待提炼的轮次时，跑一次规则提炼。
   // 每次只处理最老的 40 条，避免长对话积压时一次卡住事件循环。
-  const idleMs = Number(process.env.DSH_MEMORY_CORE_IDLE_MS ?? 5 * 60 * 1000);
-  const tickMs = Number(process.env.DSH_MEMORY_CORE_TICK_MS ?? 60 * 1000);
   let refining = false;
   let lastForget = 0;
   const DAY = 24 * 60 * 60 * 1000;
-  const timer = setInterval(() => {
+
+  // The host may dispose this scope (session resume / plugin reload) and then
+  // keep the process alive. currentStore() reopens lazily, so the timer must be
+  // rebuildable too — otherwise refine/forget silently stop after a cleanup.
+  function startTimer() {
+    if (timer) return;
+    timer = setInterval(() => {
     if (refining) return;
     if (Date.now() - lastActivity < idleMs) return;
     const db = currentStore();
@@ -200,15 +209,18 @@ export function apply(ctx) {
     } finally {
       refining = false;
     }
-  }, tickMs);
-  timer.unref?.();
+    }, tickMs);
+    timer.unref?.();
+  }
 
   ctx.effect(() => () => {
-    clearInterval(timer);
+    if (timer) clearInterval(timer);
+    timer = null;
     try {
       store?.close();
     } catch {
       /* already closed */
     }
+    store = undefined;
   }, 'dsh-cat-illrememberyou: idle refine + sqlite store');
 }

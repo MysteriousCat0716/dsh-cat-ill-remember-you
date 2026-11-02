@@ -203,6 +203,7 @@ test('ingestEvent marks the channel as origin', () => {
   ingestEvent(db, session, event(2, 'ds-bot-abc', 'QQ 里说的'));
   ingestEvent(db, session, event(3, undefined, '没来源的'));
   ingestEvent(db, session, event(4, 'qq_9ca5b5aec8fc17c3eb34ece2-xyz', 'QQ 带通道前缀'));
+  ingestEvent(db, session, event(5, 'weird-bridge-123', '未知桥接'));
 
   const rows = db.prepare('SELECT seq, origin FROM turns ORDER BY seq').all();
   assert.deepEqual(rows.map((row) => ({ ...row })), [
@@ -210,6 +211,7 @@ test('ingestEvent marks the channel as origin', () => {
     { seq: 2, origin: 'im' },
     { seq: 3, origin: 'unknown' },
     { seq: 4, origin: 'im' },
+    { seq: 5, origin: 'unknown' },
   ]);
   db.close();
 });

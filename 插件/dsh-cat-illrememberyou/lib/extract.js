@@ -12,7 +12,7 @@ const JUDGE =
   /(以后|下次|记住|不要|别|必须|规则|约定|原则上|不再|改成|还是用|决定|定了|就这样|采用|选用|偏好|更喜欢|讨厌|不喜欢)/;
 
 const ANCHOR_FILE =
-  /[A-Za-z]:[\/][^\s"'）)】\]，,；;]+|(?:[\u4e00-\u9fa5\w.@-]+\/)*[\u4e00-\u9fa5\w.-]+\.(?:mjs|js|ts|tsx|md|json|ya?ml|py|sh|ps1|cmd|txt|png|svg|db)/g;
+  /[A-Za-z]:[\\/][^\s"'）)】\]，,；;]+|[^\s"'）)】\]，,；;：:]+\.(?:mjs|js|ts|tsx|md|json|ya?ml|py|sh|ps1|cmd|txt|png|svg|db)/g;
 const ANCHOR_MSG = /\bm\d{5}\b/g;
 const ENTITY = /猫|岸|DeepSeek|dsh[\w-]*|Ollama|qwen[\w.:-]*/g;
 
@@ -83,15 +83,18 @@ export function classify(userText, allText) {
 /** @param {string} text */
 export function anchorsOf(text) {
   const set = new Set();
-  for (const match of String(text).matchAll(ANCHOR_FILE)) set.add(match[0]);
-  for (const match of String(text).matchAll(ANCHOR_MSG)) set.add(match[0]);
+  // Linear scan only: a pasted megabyte must not become an O(n²) block.
+  const s = String(text ?? '').slice(0, 8000);
+  for (const match of s.matchAll(ANCHOR_FILE)) set.add(match[0]);
+  for (const match of s.matchAll(ANCHOR_MSG)) set.add(match[0]);
   return [...set].slice(0, 8);
 }
 
 /** @param {string} text */
 export function entitiesOf(text) {
   const set = new Set();
-  for (const match of String(text).matchAll(ENTITY)) set.add(match[0]);
+  const s = String(text ?? '').slice(0, 8000);
+  for (const match of s.matchAll(ENTITY)) set.add(match[0]);
   return [...set].slice(0, 8);
 }
 
