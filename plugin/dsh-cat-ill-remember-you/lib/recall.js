@@ -555,7 +555,7 @@ export async function retrieve(
         .prepare(
           `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
            WHERE tier = 'active' AND origin = 'chat' AND (${like})
-           ORDER BY t DESC LIMIT 10`,
+           ORDER BY t DESC LIMIT 200`,
         )
         .all(...values);
       const countStmt = db.prepare(
@@ -578,13 +578,13 @@ export async function retrieve(
       }
       // 弱匹配的分数是「稀有度 × 条内重复」的累加，量纲和向量的 0–1 不一样；
       // 不归一化的话，一条长文靠重复次数就能压过语义命中。
-      // 再乘 0.5 上限：中文没有分词，3 字窗口的重合里有大量巧合，这层
-      // 只该补空位，不该抢向量层的位置。
+      // 再乘 0.5 上限：按词切了，但词面重合仍是弱证据，这层只该补空位。
       const top = candidates.reduce((max, item) => Math.max(max, item.score), 0);
-      for (const item of candidates) {
-        item.score = top > 0 ? (item.score / top) * 0.5 : 0;
-        push(item);
-      }
+      for (const item of candidates) item.score = top > 0 ? (item.score / top) * 0.5 : 0;
+      // 候选池不再按时间截断：时间新不等于相关，长文档在过去能靠词多赢。
+      // 按分数取前几条交给 push，剩下的会被记成 budget。
+      candidates.sort((a, b) => b.score - a.score);
+      for (const item of candidates.slice(0, MAX_HITS + 2)) push(item);
     }
   }
 
