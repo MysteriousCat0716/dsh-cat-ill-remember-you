@@ -176,6 +176,18 @@ test('ingestEvent trusts source.kind: only human input is stored', () => {
   // 前缀黑名单优先于 source.kind：机器串即使标成 user 也不入库
   assert.equal(ingestEvent(db, session, delegated), 0);
 
+  // 旧替换块没有 source 字段，靠前缀黑名单挡住
+  const legacyReplacement = {
+    type: 'user/message',
+    seq: 24,
+    time: 6400,
+    data: {
+      role: 'user',
+      content: [{ type: 'text', text: '[上下文替换] 更早的 14 条消息（seq 8-92）原文在本地' }],
+    },
+  };
+  assert.equal(ingestEvent(db, session, legacyReplacement), 0);
+
   const rows = db.prepare('SELECT seq, text FROM turns').all();
   assert.deepEqual(rows.map((row) => ({ ...row })), [{ seq: 20, text: '真的话' }]);
   db.close();
