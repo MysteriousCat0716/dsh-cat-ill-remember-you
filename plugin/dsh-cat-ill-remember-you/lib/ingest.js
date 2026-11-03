@@ -85,6 +85,13 @@ export function textOf(message) {
  */
 export function ingestEvent(db, session, event) {
   if (!event || typeof event !== 'object') return 0;
+  // 子代理会话整会话不入库：它的 user/message 是父代理派下去的工单
+  // （「你是只读审计员…」「Your parent agent id is …」），
+  // assistant/message 是子代理的报告，都不是猫说的话。
+  // 看会话元数据，不看文本措辞——派工单怎么写会变，header 不会。
+  // 这些行的 source.rpcId 往往是 UUID，originOf 会判成 chat，光靠 message 拦不住。
+  const header = session?.header ?? session;
+  if (header?.origin === 'subagent') return 0;
   let role;
   let message;
   if (event.type === 'user/message') {

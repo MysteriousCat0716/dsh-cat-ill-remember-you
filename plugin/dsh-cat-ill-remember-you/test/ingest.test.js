@@ -135,3 +135,22 @@ test('wantsImmediate 只认表态句', () => {
   assert.equal(wantsImmediate('以后别用 npm'), true);
   assert.equal(wantsImmediate('今天天气不错'), false);
 });
+
+test('子代理会话的派工单与报告都不入库', () => {
+  const db = openStore(':memory:');
+  // 子代理会话的 header 带 origin='subagent'；消息本身仍可能挂着
+  // source.kind='user' + UUID rpcId（originOf 会判成 chat），所以判据必须看会话。
+  const session = {
+    id: 'sub-1',
+    header: { cwd: '/w', origin: 'subagent', parentSession: 'session-p' },
+  };
+
+  const n1 = ingestEvent(db, session, userEvent({ seq: 1, text: '你是只读审计员，审这段代码的缺陷。' }));
+  const n2 = ingestEvent(db, session, assistantEvent({ seq: 2, text: '### [major] 这里会漏掉空数组。' }));
+
+  assert.equal(n1, 0);
+  assert.equal(n2, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM turns').get().n, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM memories').get().n, 0);
+  db.close();
+});
