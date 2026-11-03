@@ -131,6 +131,20 @@ CREATE TABLE IF NOT EXISTS context_stack (
   UNIQUE (sid, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_stack_t ON context_stack (t, id);
+
+-- 常驻层：每轮都要在场的那一小块。来源可以是人工写入（从别的记忆系统迁来），
+-- 也可以由提炼器从对话里抽出来。target 决定进哪一区：user / memory。
+CREATE TABLE IF NOT EXISTS persona (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  target     TEXT    NOT NULL DEFAULT 'user',
+  content    TEXT    NOT NULL,
+  importance TEXT    NOT NULL DEFAULT 'normal',
+  source     TEXT    NOT NULL DEFAULT '',
+  t          INTEGER NOT NULL,
+  last_used  INTEGER,
+  UNIQUE (target, content)
+);
+CREATE INDEX IF NOT EXISTS idx_persona_target ON persona (target, importance, t);
 `;
 
 /**

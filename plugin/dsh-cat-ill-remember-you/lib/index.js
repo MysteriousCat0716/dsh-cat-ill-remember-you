@@ -9,6 +9,7 @@ import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { planShadowV2, replaceMode } from './shadow-v2.js';
 import { backfillStack, renderStack, stackQueryText } from './context-stack.js';
+import { renderPersona } from './persona.js';
 import { setOriginalsLogger } from './originals.js';
 import { backfillTurnCwd } from './backfill.js';
 import { forgetSweep } from './forget.js';
@@ -227,6 +228,20 @@ export function apply(ctx) {
         }
       } catch (error) {
         log(`stack failed: ${error?.message ?? error}`);
+      }
+
+      // 常驻层：从 mnemon 迁过来的「关掉就不再认识他」那一块。
+      // 默认不开，避免和还在跑的 mnemon 每轮双份；DSH_MEMORY_CORE_PERSONA=on 打开。
+      if (process.env.DSH_MEMORY_CORE_PERSONA === 'on') {
+        try {
+          const personaText = renderPersona(db);
+          if (personaText) {
+            hintParts.push(personaText);
+            log(`persona chars=${personaText.length}`);
+          }
+        } catch (error) {
+          log(`persona failed: ${error?.message ?? error}`);
+        }
       }
 
       // 检索的 query = 栈里最近两条 + 这一句：只说「继续」时，栈负责说清在继续什么。
