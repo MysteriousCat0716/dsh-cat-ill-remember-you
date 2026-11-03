@@ -76,6 +76,7 @@ async function runPreStep({
   memory = null,
   history = [],
   allow = true,
+  providerSid = 'new-session',
   stackText = '上次停在：把 stack 接进 pre-step',
 }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stack-pre-step-'));
@@ -131,7 +132,7 @@ async function runPreStep({
     );
     const provider = harness.contexts.get('memory-core');
     const hintText = provider
-      ? provider.text({ agent: { id: 'new-session', session: { id: 'new-session' } } })
+      ? provider.text({ agent: { id: providerSid, session: { id: providerSid } } })
       : '';
     const check = openStore(file);
     const recallCount = check.prepare('SELECT count(*) AS c FROM recall_log').get().c;
@@ -188,6 +189,15 @@ test('pre-step: 只说「继续」时，栈里的上一句参与记忆检索', a
     },
   });
   assert.ok(hintText.includes('stack 判据：栈存指针、正文现查'), '仅凭「继续」不该命中；命中说明栈参与了 query');
+});
+
+test('pre-step: 新会话还没算过自己的 hint 时，provider 兜底最近一次', async () => {
+  const { hintText } = await runPreStep({
+    turn: 1,
+    messages: [userMessage('回来了')],
+    providerSid: 'brand-new-session',
+  });
+  assert.ok(hintText.includes(STACK_MARK), '新会话第一轮应兜底到最近一次 hint，而不是空');
 });
 
 test('pre-step: 有取回命中时 recall_log 落账（不因 turnNo 漏定义而静默失败）', async () => {
