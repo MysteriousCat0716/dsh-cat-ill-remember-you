@@ -95,6 +95,47 @@ function weakTerms(text) {
   return [...out].slice(0, 8);
 }
 
+
+/** Count non-overlapping occurrences of a literal term. */
+function countOccurrences(text, term) {
+  if (!term) return 0;
+  let count = 0;
+  let at = text.indexOf(term);
+  while (at !== -1) {
+    count += 1;
+    at = text.indexOf(term, at + term.length);
+  }
+  return count;
+}
+
+/**
+ * 弱匹配打分：稀有度 + 条内重复次数。
+ *
+ * 旧实现 8 个词等权、OR 命中、只取最新一条，权重根本不参与排序——
+ * 「这次」「那个」这类词和真正的主题词同权，回来的是最新而不是最相关。
+ * 这里按评审的三条判据里能落地的两条做：
+ *  - 稀有度：词在全库出现得越少，权重越高（1 / log(2 + df)）；
+ *  - 分布：同一条记忆里出现多次算主题词，封顶 3 次，避免长文霸榜。
+ * 第三条「命中在 user 问句里 > assistant 长解释里」需要 role，memories
+ * 没有这个列，先不做；summary 里已经带着「问：/答：」的形态，后面再说。
+ */
+function weakScoreOf(db, terms, text, weightOf, countStmt) {
+  const body = String(text ?? '');
+  let score = 0;
+  for (const term of terms) {
+    const tf = countOccurrences(body, term);
+    if (tf === 0) continue;
+    let weight = weightOf.get(term);
+    if (weight === undefined) {
+      const df = Number(countStmt.get(`%${escapeLike(term)}%`)?.c) || 0;
+      weight = 1 / Math.log(2 + df);
+      weightOf.set(term, weight);
+    }
+    score += Math.min(tf, 3) * weight;
+  }
+  return score;
+}
+
 /** Pull the scene out of a stored `当时：…｜依据：…` why. */
 function sceneOf(why) {
   const text = String(why ?? '');
@@ -402,18 +443,27 @@ export async function retrieve(
         .prepare(
           `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
            WHERE tier = 'active' AND origin = 'chat' AND (${like})
-           ORDER BY t DESC LIMIT 1`,
+           ORDER BY t DESC LIMIT 10`,
         )
         .all(...values);
+      // 候选扩到 10 条，再按稀有度/条内重复打分选一条——只取最新那条的话，
+      // 权重再准也没有参与排序的机会。
+      const countStmt = db.prepare(
+        "SELECT count(*) AS c FROM memories WHERE text LIKE ? ESCAPE '\\'",
+      );
+      const weightOf = new Map();
+      let best = null;
       for (const row of rows) {
         const item = rowToItem(row, 'memory');
         if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
+        const score = weakScoreOf(db, terms, row.text, weightOf, countStmt);
+        if (score <= 0) continue;
         item.section = 'weak';
-        item.score = 0.1;
+        item.score = score;
         item.why = `这一轮没给锚点也没给实体；这条和当前句子有词面重合（${terms.slice(0, 3).join('、')}…），属弱匹配。`;
-        push(item);
-        break;
+        if (!best || score > best.score) best = item;
       }
+      if (best) push(best);
     }
   }
 

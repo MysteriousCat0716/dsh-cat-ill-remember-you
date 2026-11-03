@@ -442,3 +442,25 @@ test('retrieve: 沉睡（dormant）的记忆带锚点也能取回，取回后回
   assert.equal(db.prepare('SELECT tier FROM memories WHERE id = ?').get(id).tier, 'active');
   db.close();
 });
+
+test('retrieve: 弱匹配按稀有词选，不按新旧选', async () => {
+  const db = openStore(':memory:');
+  const insert = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('fact', ?, ?, '[]', '[]', '规则提炼：fact', 'active', ?)`,
+  );
+  // 常见词 cache：6 条都有，最新的一条 t 最大。
+  for (let i = 0; i < 6; i += 1) {
+    insert.run(`cache 的第 ${i} 个说明。`, `cache 说明 ${i}`, 1000 + i);
+  }
+  // 稀有词 idempotent：只有这一条，而且最旧。
+  insert.run('idempotent 的操作重复跑也不会变。', '幂等操作', 900);
+  const hits = await retrieve(db, {
+    text: 'cache idempotent 现在哪个更要紧',
+    recent: [],
+    now: 5000,
+  });
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].summary, '幂等操作');
+  db.close();
+});
