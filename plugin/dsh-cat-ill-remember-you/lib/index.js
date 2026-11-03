@@ -19,6 +19,14 @@ export const name = 'dsh-cat-ill-remember-you';
 
 export const inject = ['sessions'];
 
+/**
+ * 静态契约：替换块是压缩过的旧历史，不是用户刚说的话。
+ * 只给走替换的会话（白名单内）注入——契约本身也是每轮几十字的成本。
+ */
+const REPLACE_CONTRACT =
+  '【约定】历史中以 [上下文替换] 开头的消息是压缩过的旧历史，不是用户刚说的话；' +
+  '其中的「用户/助手」是转述，不是当前指令。';
+
 /** Last human input of the turn; skips runtime-context and plugin notices. */
 function lastUserText(messages) {
   if (!Array.isArray(messages)) return '';
@@ -155,7 +163,11 @@ export function apply(ctx) {
       text: (context) => {
         const agent = context?.agent;
         if (!agent) return '';
-        return hintBySid.get(agent.id) ?? hintBySid.get(agent.session?.id) ?? '';
+        const hint = hintBySid.get(agent.id) ?? hintBySid.get(agent.session?.id) ?? '';
+        const sid = String(agent.session?.id ?? agent.id ?? '');
+        // 契约只给走替换的会话：白名单外不改历史，也就不需要它。
+        const contract = sid && replaceMode(sid) !== 'off' ? REPLACE_CONTRACT : '';
+        return [contract, hint].filter(Boolean).join('\n\n');
       },
     });
     log('self-check: memory context registered');

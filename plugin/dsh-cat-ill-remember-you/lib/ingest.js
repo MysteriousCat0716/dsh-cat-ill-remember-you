@@ -87,6 +87,11 @@ export function ingestEvent(db, session, event) {
 
   const text = textOf(message).trim().slice(0, MAX_TURN_CHARS);
   if (!text) return 0;
+  // 过了上面的黑名单还留着这个标记的，才是真人自己打的：转成全角再入库，
+  // 免得日后被当成压缩块（重放/回填时冒充历史）。
+  const storedText = text
+    .replace(/\[上下文替换\]/g, '［上下文替换］')
+    .replace(/\[上下文替换/g, '［上下文替换');
 
   if (role === 'user') {
     // 先过前缀黑名单：即使 source.kind 是 'user'，子代理委派、
@@ -115,7 +120,7 @@ export function ingestEvent(db, session, event) {
         : typeof sessionCwd === 'string'
           ? sessionCwd
           : '',
-    text,
+    text: storedText,
     t,
   });
   // 只有对话行才进栈：im/unknown 来源的行在 readStack 里 JOIN 不到角色和

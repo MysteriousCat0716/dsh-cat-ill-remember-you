@@ -50,6 +50,28 @@ test('evictOverflow 幂等：容量内重复调用不出栈', () => {
   db.close();
 });
 
+test('evictOverflow: 出栈摘要带上同一轮 assistant 的结尾', () => {
+  const db = openStore(':memory:');
+  insertTurn(db, { sid: 's-a', seq: 1, role: 'user', text: '这句问的是第一件事', t: 1000 });
+  insertTurn(db, {
+    sid: 's-a',
+    seq: 2,
+    role: 'assistant',
+    text: '先做备份再改。这一轮的结论落在这句话的尾巴上。',
+    t: 1001,
+  });
+  insertTurn(db, { sid: 's-b', seq: 1, text: '后来的一句', t: 2000 });
+  pushStack(db, { sid: 's-a', seq: 1, t: 1000 });
+  pushStack(db, { sid: 's-b', seq: 1, t: 2000 });
+  assert.equal(evictOverflow(db, { limit: 1 }), 1);
+  const oldest = readStack(db, { limit: 10 }).find((row) => row.sid === 's-a');
+  assert.equal(oldest.evicted, 1);
+  assert.match(oldest.summary, /问：/);
+  assert.match(oldest.summary, /答：/);
+  assert.match(oldest.summary, /结论落在这句话的尾巴上/);
+  db.close();
+});
+
 test('renderStack: 全局 20 条之外，补本会话更早的几条', () => {
   const db = openStore(':memory:');
   insertTurn(db, { sid: 's-me', seq: 1, text: '本会话第一句', t: 1000 });

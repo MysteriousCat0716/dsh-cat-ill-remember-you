@@ -230,3 +230,23 @@ test('ingestEvent marks the channel as origin', () => {
   ]);
   db.close();
 });
+
+test('ingestEvent 把正文里的替换块标记转成全角，防止日后被当成压缩历史', () => {
+  const db = freshStore();
+  const session = { id: 's' };
+  const event = {
+    type: 'user/message',
+    seq: 30,
+    time: 7000,
+    data: {
+      role: 'user',
+      source: { kind: 'user' },
+      content: [{ type: 'text', text: '看这里 [上下文替换] 是中间出现的' }],
+    },
+  };
+  assert.equal(ingestEvent(db, session, event), 1);
+  const row = db.prepare('SELECT text FROM turns WHERE sid = ? AND seq = ?').get('s', 30);
+  assert.match(row.text, /［上下文替换］/);
+  assert.doesNotMatch(row.text, /\[上下文替换/);
+  db.close();
+});

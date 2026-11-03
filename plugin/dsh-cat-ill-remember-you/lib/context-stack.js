@@ -38,6 +38,29 @@ function summarize(text) {
 }
 
 /**
+ * 出栈摘要：同一轮的问答一起留——问留开头，答留尾巴。
+ * 结论通常在 assistant 回复的末尾，只截 user 那一句会把结论丢掉。
+ * 不调模型，回 turns 表按 (sid, seq) 取下一条 assistant 回复。
+ */
+function summarizeBlock(db, { sid, seq, text }) {
+  const question = String(text ?? '').replace(/\s+/g, ' ').trim();
+  const answer = String(
+    db
+      .prepare(
+        `SELECT text FROM turns
+         WHERE sid = ? AND seq > ? AND origin = 'chat' AND role = 'assistant'
+         ORDER BY seq ASC LIMIT 1`,
+      )
+      .get(sid, seq)?.text ?? '',
+  )
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!answer) return summarize(question);
+  const tail = answer.length > 100 ? answer.slice(-100) : answer;
+  return `问：${clip(question, 60)}｜答：${tail}`;
+}
+
+/**
  * 入栈：只记指针。同一 (sid, seq) 重复入栈是幂等的。
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {{sid:string, seq:number, t?:number}} item
@@ -77,7 +100,7 @@ export function evictOverflow(db, { limit = STACK_LIMIT } = {}) {
     )
     .all(overflow);
   const update = db.prepare('UPDATE context_stack SET evicted = 1, summary = ? WHERE id = ?');
-  for (const row of rows) update.run(summarize(row.text), row.id);
+  for (const row of rows) update.run(summarizeBlock(db, row), row.id);
   return rows.length;
 }
 
