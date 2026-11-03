@@ -111,6 +111,19 @@ export function renderStack(
 }
 
 /**
+ * 栈里的最近几条纯文本，拼成检索 query 的前半段。
+ * 不带头部、不做展示格式——检索要的是「在说什么」，不是「长什么样」。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {{limit?:number, chars?:number}} [options]
+ */
+export function stackQueryText(db, { limit = 2, chars = 80 } = {}) {
+  return readStack(db, { limit })
+    .map((row) => clip(row.summary || row.text, chars))
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
  * 首次启用时用 turns 里最近的历史把栈铺满（只做一次）。
  * 没有这一步，升级后的栈是空的，要等新消息才慢慢有内容。
  * @returns {number} 本次入栈条数

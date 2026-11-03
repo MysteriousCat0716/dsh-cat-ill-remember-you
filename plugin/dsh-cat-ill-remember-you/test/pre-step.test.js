@@ -69,7 +69,15 @@ function fakeCtx(cwd, history = []) {
 }
 
 /** 准备一个带别的会话原文的临时库，然后按真实接线跑一次 pre-step。 */
-async function runPreStep({ turn, messages, cwd = '/proj', memory = null, history = [], allow = true }) {
+async function runPreStep({
+  turn,
+  messages,
+  cwd = '/proj',
+  memory = null,
+  history = [],
+  allow = true,
+  stackText = '上次停在：把 stack 接进 pre-step',
+}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stack-pre-step-'));
   const file = path.join(dir, 'memory.db');
   const seed = openStore(file);
@@ -78,7 +86,7 @@ async function runPreStep({ turn, messages, cwd = '/proj', memory = null, histor
     .prepare(
       `INSERT INTO turns (sid, seq, role, origin, cwd, text, t) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run('old-session', 1, 'user', 'chat', cwd, '上次停在：把 stack 接进 pre-step', Date.now() - 60_000);
+    .run('old-session', 1, 'user', 'chat', cwd, stackText, Date.now() - 60_000);
   seed
     .prepare(`INSERT INTO context_stack (sid, seq, t) VALUES (?, ?, ?)`)
     .run('old-session', 1, Date.now() - 60_000);
@@ -165,6 +173,20 @@ test('pre-step: 白名单外的会话不注入全局栈', async () => {
     allow: false,
   });
   assert.equal(hintText.includes(STACK_MARK), false);
+});
+
+test('pre-step: 只说「继续」时，栈里的上一句参与记忆检索', async () => {
+  const { hintText } = await runPreStep({
+    turn: 1,
+    messages: [userMessage('继续')],
+    stackText: '上次停在：把 lib/context-stack.js 接进 pre-step',
+    memory: {
+      text: 'lib/context-stack.js 的栈只放指针，正文现查',
+      summary: 'stack 判据：栈存指针、正文现查',
+      anchors: ['lib/context-stack.js'],
+    },
+  });
+  assert.ok(hintText.includes('stack 判据：栈存指针、正文现查'), '仅凭「继续」不该命中；命中说明栈参与了 query');
 });
 
 test('pre-step: 有取回命中时 recall_log 落账（不因 turnNo 漏定义而静默失败）', async () => {

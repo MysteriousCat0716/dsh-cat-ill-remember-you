@@ -8,7 +8,7 @@ import { ingestEvent, textOf } from './ingest.js';
 import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { planShadowV2, replaceMode } from './shadow-v2.js';
-import { backfillStack, renderStack } from './context-stack.js';
+import { backfillStack, renderStack, stackQueryText } from './context-stack.js';
 import { setOriginalsLogger } from './originals.js';
 import { backfillTurnCwd } from './backfill.js';
 import { forgetSweep } from './forget.js';
@@ -220,14 +220,22 @@ export function apply(ctx) {
         log(`stack failed: ${error?.message ?? error}`);
       }
 
-      const query = lastUserText(messages);
+      // 检索的 query = 栈里最近两条 + 这一句：只说「继续」时，栈负责说清在继续什么。
+      const currentText = lastUserText(messages);
+      const recent = currentText
+        ? recentTexts(messages).filter((text) => text !== currentText)
+        : recentTexts(messages);
+      const query = [stackQueryText(db, { limit: 2 }), currentText].filter(Boolean).join('\n');
       if (query) {
-        const hits = retrieve(db, {
-          text: query,
-          cwd,
-          // 当前这句本身不算「已经有什么」，否则 dsh 这类高频实体会把自己挡掉。
-          recent: recentTexts(messages).filter((text) => text !== query),
-        });
+        let hits = retrieve(db, { text: query, cwd, recent });
+        if (hits.length === 0 && currentText) {
+          // 同一句放到更宽的栈上下文里再联想一次；还不中就是真没有。
+          const wider = [stackQueryText(db, { limit: 6 }), currentText].filter(Boolean).join('\n');
+          if (wider !== query) {
+            hits = retrieve(db, { text: wider, cwd, recent });
+            if (hits.length > 0) log(`recall retry hits=${hits.length}`);
+          }
+        }
         if (hits.length > 0) {
           const text = renderHint(hits);
           log(`recall hits=${hits.length} chars=${text.length}`);
@@ -260,7 +268,7 @@ export function apply(ctx) {
           }
           // M3 影子：算「如果替换会少给多少、补多少」，只记账，不改 messages。
           try {
-            const plan = shadowPlan({ messages, hits, query });
+            const plan = shadowPlan({ messages, hits, query: currentText });
             plan.hintChars = text.length;
             recordShadow(db, { sid, turn: turnNo, ...plan });
             if (plan.replaced > 0) log(`shadow replaced=${plan.replaced} saved=${plan.replacedChars} added=${plan.added}`);
