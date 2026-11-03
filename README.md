@@ -145,6 +145,20 @@ SQLite，`node:sqlite`，无原生依赖。十一张表：
 
 数据库默认在 `~/.dsh/memory/core.db`，可用 `DSH_MEMORY_CORE_DB` 覆盖。
 
+## 看板
+
+```bash
+cd plugin/dsh-cat-ill-remember-you
+node tools/studio.mjs            # 浏览器打开 http://127.0.0.1:3139
+```
+
+只读，两个页：
+
+- **搜 turns**：按字面搜原文，带会话 id、seq、时间、角色；
+- **看账**：取回账（`recall_log`，含 `used`）、替换账（`shadow_v2`，含字符差和 token 保留率）、栈（active/出栈条数）、记忆库分布（kind × tier）。
+
+绑 `127.0.0.1`，不提供任何写接口。它没有做成 dsh 的 Web GUI 页面，是因为客户端插件要重启 dsh 才生效——这个工具是为了「现在就能看」。
+
 ## 跑测试
 
 ```bash
@@ -152,7 +166,7 @@ cd plugin/dsh-cat-ill-remember-you
 for f in test/*.test.js; do node "$f"; done
 ```
 
-测试全部用内存库（`':memory:'`），不碰真实数据。当前 152 条，全过。
+测试全部用内存库（`':memory:'`），不碰真实数据。当前 164 条，全过。
 
 （`node --test test/` 在部分 Windows 沙箱里会给每个文件起子进程、报 `spawn EPERM`，所以上面写成逐文件跑。）
 

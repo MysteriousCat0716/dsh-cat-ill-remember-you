@@ -41,7 +41,7 @@
 for f in test/*.test.js; do node "$f"; done
 ```
 
-152 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。`node --test test/` 在部分 Windows 沙箱里会给每个文件起子进程、报 `spawn EPERM`，所以逐文件跑。
+164 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。`node --test test/` 在部分 Windows 沙箱里会给每个文件起子进程、报 `spawn EPERM`，所以逐文件跑。
 
 ## 环境变量
 
