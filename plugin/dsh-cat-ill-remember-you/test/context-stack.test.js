@@ -228,3 +228,16 @@ test('renderStack: 当前窗口里已有的行不在本会话段重复', () => {
   assert.doesNotMatch(text, /第三句还在当前窗口/);
   db.close();
 });
+
+test('renderStack: 全局段没装满的额度给本会话，本会话不再被 600 卡死', () => {
+  const db = openStore(':memory:');
+  insertTurn(db, { sid: 's-old', seq: 1, text: '旧会话最后一句：缓存那个坑先记着。', t: 1000 });
+  pushStack(db, { sid: 's-old', seq: 1, t: 1000 });
+  for (let i = 1; i <= 10; i += 1) {
+    insertTurn(db, { sid: 's-me', seq: i, text: `本会话第${i}句`.padEnd(130, '·'), t: 2000 + i });
+    pushStack(db, { sid: 's-me', seq: i, t: 2000 + i });
+  }
+  const text = renderStack(db, { sid: 's-me', maxChars: 3000, localBudget: 600 });
+  assert.match(text, /本会话第1句/);
+  db.close();
+});

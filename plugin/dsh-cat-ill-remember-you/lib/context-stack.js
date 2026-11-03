@@ -404,7 +404,9 @@ export function renderStack(
     const rows = readSessionRows(db, sid).filter(
       (row) => !keys.has(`${row.sid}:${row.seq}`) && !skipSeqs.has(Number(row.seq)),
     );
-    const localItems = pickRounds(rows, { budget: localBudget, rawRounds: 0, rawChars, oldChars, sid });
+    // 全局段没装满的额度不浪费，交给本会话——接上最需要的本来就是最近这几轮。
+    const localBudgetNow = Math.max(localBudget, Math.max(0, maxChars - usedGlobal));
+    const localItems = pickRounds(rows, { budget: localBudgetNow, rawRounds: 0, rawChars, oldChars, sid });
     localItems.sort((a, b) => a.t - b.t);
     locals = trimOldest(localItems, {
       maxChars: Math.max(0, maxChars - usedGlobal),
