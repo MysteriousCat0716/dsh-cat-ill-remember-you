@@ -62,7 +62,9 @@ export function stackSize(db) {
  */
 export function evictOverflow(db, { limit = STACK_LIMIT } = {}) {
   const cap = Math.max(1, Math.floor(Number(limit) || STACK_LIMIT));
-  const overflow = stackSize(db) - cap;
+  // 只数还没出栈的行：表里留着历史指针，用总数算会把 active 全挤掉。
+  const active = Number(db.prepare('SELECT count(*) AS c FROM context_stack WHERE evicted = 0').get()?.c) || 0;
+  const overflow = active - cap;
   if (overflow <= 0) return 0;
   const rows = db
     .prepare(
@@ -111,7 +113,7 @@ export function readLocalStack(db, { sid = '', limit = LOCAL_EXTRA, exclude = ne
       `SELECT s.sid, s.seq, s.t, s.evicted, s.summary, t.role, t.text
        FROM context_stack s
        LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
-       WHERE s.sid = ? AND s.evicted = 0
+       WHERE s.sid = ?
        ORDER BY s.t DESC, s.id DESC
        LIMIT ?`,
     )
