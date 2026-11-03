@@ -9,6 +9,7 @@ import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { planShadowV2 } from './shadow-v2.js';
 import { planCarry, setCarryLogger } from './carry.js';
+import { renderStack } from './context-stack.js';
 import { setOriginalsLogger } from './originals.js';
 import { backfillTurnCwd } from './backfill.js';
 import { forgetSweep } from './forget.js';
@@ -215,6 +216,17 @@ export function apply(ctx) {
         }
       } catch (error) {
         log(`carry failed: ${error?.message ?? error}`);
+      }
+
+      // 全局栈：跨会话按时间取最近几条，作为替换上下文（指针在栈里，正文现查）。
+      try {
+        const stacked = renderStack(db);
+        if (stacked) {
+          hintParts.push(stacked);
+          log(`stack chars=${stacked.length}`);
+        }
+      } catch (error) {
+        log(`stack failed: ${error?.message ?? error}`);
       }
 
       const query = lastUserText(messages);
