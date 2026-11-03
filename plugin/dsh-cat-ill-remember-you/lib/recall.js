@@ -349,15 +349,11 @@ export async function retrieve(
     }
   }
 
-  // L2.4: 向量候选。锚点、实体都没有时，用语义找一条；Ollama 不在就跳过，
-  // 不解释、不报错——降级回下面的词面弱匹配。why 写明是向量，别让它冒充锚点。
-  if (
-    hits.length === 0 &&
-    query.anchors.length === 0 &&
-    query.entities.length === 0 &&
-    vector &&
-    Date.now() > vectorCooldownUntil
-  ) {
+  // L2.4: 向量候选。锚点/实体没补满两条就试一次；只在「全空」时才跑的话，
+  // 话里一带文件名这条通路就永远轮不到——而语义相近的旧事往往恰恰不共享词。
+  // Ollama 不在就跳过，不解释、不报错——降级回下面的词面弱匹配。
+  // why 写明是向量，别让它冒充锚点。
+  if (hits.length < MAX_HITS && vector && Date.now() > vectorCooldownUntil) {
     try {
       const endpoint = (
         process.env.DSH_MEMORY_CORE_OLLAMA || DEFAULT_ENDPOINT
@@ -381,7 +377,7 @@ export async function retrieve(
           if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
           item.section = 'vector';
           item.score = candidate.score;
-          item.why = `这一轮没给锚点也没给实体；这条语义相近（${candidate.score.toFixed(3)}）。`;
+          item.why = `这一轮锚点/实体没补满两条；这条语义相近（${candidate.score.toFixed(3)}）。`;
           push(item);
           break;
         }
