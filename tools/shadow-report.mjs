@@ -4,15 +4,15 @@
  * 用法：node tools/shadow-report.mjs [条数]
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-const DB = process.env.DSH_MEMORY_CORE_DB || 'C:/Users/Administrator/.dsh/memory/core.db';
+// 别硬编码个人路径：换机器、换用户名、开源都会废。库跟其余工具一样走 homedir，
+// 输出默认落在当前目录，环境变量仍可覆盖。
+const DB = process.env.DSH_MEMORY_CORE_DB || path.join(os.homedir(), '.dsh', 'memory', 'core.db');
 const LIMIT = Number(process.argv[2] ?? 40) || 40;
-const OUT = path.resolve(
-  process.env.DSH_MEMORY_CORE_REPORT ??
-    'C:/Users/Administrator/Documents/deepseek-harness/default-workspace/产出/文档/影子日报-2026-11-02.md',
-);
+const OUT = path.resolve(process.env.DSH_MEMORY_CORE_REPORT ?? '影子日报.md');
 
 const db = new DatabaseSync(DB, { readOnly: true });
 const total = db.prepare('SELECT COUNT(*) AS n FROM shadow_v2').get().n;

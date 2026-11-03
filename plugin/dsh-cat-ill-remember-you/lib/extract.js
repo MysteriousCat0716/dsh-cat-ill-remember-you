@@ -295,7 +295,3 @@ export function refine(db, opts = {}) {
   }
   return { turns: turns.length, memories };
 }
-
-/** 每块文本上限（给未来模型用；规则版暂未使用）。 */
-export const BLOCK_CHARS = MAX_BLOCK_CHARS;
-export const JUDGE_WORDS = JUDGE;

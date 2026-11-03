@@ -131,11 +131,6 @@ CREATE TABLE IF NOT EXISTS carry_log (
 `;
 
 /**
- * Open (or create) the memory core database.
- * @param {string} [file] database path; ':memory:' for tests.
- * @returns {import('node:sqlite').DatabaseSync}
- */
-/**
  * Add a column that older stores lack. `CREATE TABLE IF NOT EXISTS` never
  * rewrites an existing table, so upgrades need an explicit ALTER.
  * @param {import('node:sqlite').DatabaseSync} db
@@ -150,6 +145,11 @@ function ensureColumn(db, table, column, ddl) {
   }
 }
 
+/**
+ * Open (or create) the memory core database.
+ * @param {string} [file] database path; ':memory:' for tests.
+ * @returns {import('node:sqlite').DatabaseSync}
+ */
 export function openStore(file = DEFAULT_DB_FILE) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   // Refuse to silently turn an empty or foreign file into a fresh store: that is
