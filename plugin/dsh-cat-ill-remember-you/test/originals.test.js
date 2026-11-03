@@ -12,6 +12,7 @@ import {
   recentSessionOriginals,
   sessionLogFile,
   refPointerOf,
+  spillPathOf,
   textOfEvent,
   toolResultsFromEvents,
   workspaceDirName,
@@ -173,4 +174,35 @@ test('toolResultsFromEvents: 按 callId 配工具名，大结果标出 ref', () 
   assert.equal(results[0].ref, null);
   assert.equal(results[1].name, 'bash');
   assert.equal(results[1].ref.refId, 'ref://s/bash/xyz');
+});
+
+test('spill: 工具结果被截断时，从磁盘读回全文', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-originals-spill-'));
+  try {
+    const file = join(dir, 'ab12cd34ef56-ops_bash.txt');
+    writeFileSync(file, '全文第一行\n全文第二行', 'utf8');
+    const preview = `[Notice: 12000 bytes omitted. Full formatted result stored at: ${file}. Use read with offset/limit, or grep this path to search within it.]`;
+    assert.equal(spillPathOf(preview), file);
+    const events = [
+      { type: 'tool/call', seq: 1, data: { calls: [{ callId: 'c1', name: 'ops_bash' }] } },
+      { type: 'tool/result', seq: 2, data: { message: { source: { callId: 'c1' }, content: [{ type: 'text', text: preview }] } } },
+    ];
+    const [result] = toolResultsFromEvents(events);
+    assert.equal(result.spill, file);
+    assert.equal(result.text, '全文第一行\n全文第二行');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('spill: 文件不在了就退回预览，不抛错', () => {
+  const missing = join(tmpdir(), 'dsh-originals-missing', 'missing.txt');
+  const preview = `[Notice: 1 bytes omitted. Full formatted result stored at: ${missing}. Use read with offset/limit, or grep this path to search within it.]`;
+  const events = [
+    { type: 'tool/call', seq: 1, data: { calls: [{ callId: 'c1', name: 'read' }] } },
+    { type: 'tool/result', seq: 2, data: { message: { source: { callId: 'c1' }, content: [{ type: 'text', text: preview }] } } },
+  ];
+  const [result] = toolResultsFromEvents(events);
+  assert.equal(result.text, preview);
+  assert.equal(result.spill, missing);
 });

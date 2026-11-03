@@ -14,6 +14,7 @@
 import { anchorsOf, entitiesOf } from './extract.js';
 import { INJECT_RE } from './ingest.js';
 import { sidOf } from './sid.js';
+import { spillPathOf } from './originals.js';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -206,14 +207,23 @@ function toolNote(session, seqs) {
         if (call?.callId && call?.name) names.set(String(call.callId), String(call.name));
       }
     } else if (event.type === 'tool/result') {
-      const callId = event.data?.message?.source?.callId;
-      results.push({ seq, name: names.get(String(callId)) ?? '' });
+      const message = event.data?.message;
+      const callId = message?.source?.callId;
+      const text = (Array.isArray(message?.content) ? message.content : [])
+        .map((block) => (typeof block?.text === 'string' ? block.text : ''))
+        .join('\n');
+      results.push({ seq, name: names.get(String(callId)) ?? '', spill: spillPathOf(text) });
     }
   }
   if (results.length === 0) return '';
   const head = results.slice(0, 4).map((item) => `${item.name || '工具'}@${item.seq}`).join('、');
   const more = results.length > 4 ? ` 等 ${results.length} 个` : '';
-  return `［工具结果 ${results.length} 个：${head}${more}；原文按 seq 取回］`;
+  // spill 目录比 seq 稳定：seq 重启后指过去是空的，磁盘上的文件还在。
+  const dirs = [...new Set(results.map((item) => (item.spill ? path.dirname(item.spill) : '')).filter(Boolean))];
+  const where = dirs.length === 0
+    ? '；原文按 seq 取回'
+    : `；全文在 ${dirs[0]}${dirs.length > 1 ? ` 等 ${dirs.length} 个目录` : ''}`;
+  return `［工具结果 ${results.length} 个：${head}${more}${where}］`;
 }
 
 /** surface 上 seq 落在区间内的节点（含工具节点）。 */

@@ -722,3 +722,54 @@ test('planShadowV2: full 模式压掉工具结果时，替换文本留一行索�
     db.close();
   }
 });
+
+test('planShadowV2: 工具结果在 spill 上时，索引写目录而不是 seq', () => {
+  const spill = 'C:/tmp/spill/session-abc/1234-ops_bash.txt';
+  const entries = [
+    [1, 'user', '先看这个文件'],
+    [2, 'assistant', '我去读'],
+    [5, 'user', '继续'],
+    [6, 'assistant', '好'],
+  ];
+  const tools = [
+    { type: 'tool/call', seq: 3, data: { calls: [{ callId: 'c1', name: 'ops_bash' }] } },
+    {
+      type: 'tool/result',
+      seq: 4,
+      data: {
+        message: {
+          source: { callId: 'c1' },
+          content: [{
+            type: 'text',
+            text: `[Notice: 12000 bytes omitted. Full formatted result stored at: ${spill}. Use read with offset/limit, or grep this path to search within it.]`,
+          }],
+        },
+      },
+    },
+  ];
+  const events = new Map();
+  for (const [seq, role, text] of entries) events.set(seq, { seq, role, text });
+  for (const tool of tools) events.set(tool.seq, tool);
+  const session = {
+    id: 'sid-tool-spill',
+    surface: { nodes: [0, 1, 2, 3, 4, 5, 6] },
+    eventAt: (seq) => events.get(seq),
+    deriveEventMessage: (event) =>
+      event && (event.role === 'user' || event.role === 'assistant')
+        ? { role: event.role, content: [{ type: 'text', text: event.text }] }
+        : undefined,
+    append: () => ({ seq: 999 }),
+  };
+  const cleanup = useWhitelist(['sid-tool-spill:full']);
+  const db = openStore(':memory:');
+  try {
+    const plan = planShadowV2(session, db, { now: 1 });
+    assert.ok(plan, 'full 模式应产出替换计划');
+    assert.ok(plan.text.includes('ops_bash@4'));
+    assert.ok(plan.text.includes('C:/tmp/spill/session-abc'));
+    assert.ok(!plan.text.includes('按 seq 取回'));
+  } finally {
+    cleanup();
+    db.close();
+  }
+});

@@ -101,6 +101,33 @@ export function refPointerOf(text) {
   return { refId: id[1], producerTool: tool ? tool[1] : null };
 }
 
+/**
+ * spill 路径：工具结果超过 token 阈值时，DSH 把全文写到
+ * `%TEMP%/dsh-spill-XXXXXX/session-<hash>/<rand>-<tool>`，正文只留预览和一行
+ * `Full formatted result stored at: <path>. Use read with offset/limit, ...`。
+ * 这是插件侧唯一能拿到的「全文」，比 refId 有用——refId 指向进程内存，重启就空。
+ */
+const SPILL_PATH = /Full formatted result stored at: (.+?)\. (?:Use read|$)/;
+
+export function spillPathOf(text) {
+  const value = String(text ?? '');
+  const match = value.match(SPILL_PATH);
+  return match ? match[1].trim() : '';
+}
+
+/** 读 spill 文件；不存在、超上限、读失败都返回空串，让调用方退回正文预览。 */
+function readSpillText(path) {
+  if (typeof path !== 'string' || path.length === 0) return '';
+  try {
+    if (!existsSync(path)) return '';
+    const size = statSync(path).size;
+    if (size > MAX_ORIGINAL_FILE_BYTES) return '';
+    return readFileSync(path, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
 /** tool/call 里 callId → 工具名，用来给 tool/result 补上名字。 */
 function toolNames(events) {
   const names = new Map();
@@ -127,16 +154,20 @@ export function toolResultsFromEvents(events) {
     if (event?.type !== 'tool/result') continue;
     const message = event.data?.message;
     const content = Array.isArray(message?.content) ? message.content : [];
-    const text = content
+    const preview = content
       .map((block) => (block && typeof block.text === 'string' ? block.text : ''))
       .join('\n');
-    if (text.length === 0) continue;
+    if (preview.length === 0) continue;
+    // spill 的全文在磁盘上；读得到就用全文，读不到保留正文预览。
+    const spill = spillPathOf(preview);
+    const text = readSpillText(spill) || preview;
     const callId = message?.source?.callId ?? event.data?.callId ?? '';
     out.push({
       seq: event.seq,
       name: names.get(String(callId)) ?? String(event.data?.name ?? ''),
       text,
-      ref: refPointerOf(text),
+      ref: refPointerOf(preview),
+      spill,
     });
   }
   return out;
