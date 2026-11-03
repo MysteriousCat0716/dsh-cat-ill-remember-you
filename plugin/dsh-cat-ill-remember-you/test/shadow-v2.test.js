@@ -289,6 +289,25 @@ test('planShadowV2: full 第二轮把旧替换块包进区间，原文从 turns 
   }
 });
 
+test('planShadowV2: full 模式不把节点 0 的 system prompt 包进区间', () => {
+  const db = openStore(':memory:');
+  const entries = textEntries('消息', 9).filter(([seq]) => seq >= 2);
+  const session = fakeSession(entries, 'sid-sys-0');
+  // 真实宿主里节点 0 是 system prompt，有自己的 seq，不是占位 0。
+  session.surface.nodes = [1, ...entries.map(([seq]) => seq)];
+  const restore = useWhitelist(['sid-sys-0:full']);
+  try {
+    const plan = planShadowV2(session, db, { now: 1 });
+    assert.ok(plan);
+    assert.equal(plan.rangeStart, 2);
+    assert.equal(plan.rangeEnd, 7);
+    assert.match(plan.text, /第 2 条/);
+  } finally {
+    restore();
+    db.close();
+  }
+});
+
 test('planShadowV2: 字数超预算时条数不够也换（只换得动最早那段）', () => {
   const db = openStore(':memory:');
   const long = Array.from({ length: 8 }, (_, i) => [

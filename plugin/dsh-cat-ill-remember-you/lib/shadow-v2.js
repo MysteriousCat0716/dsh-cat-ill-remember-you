@@ -439,9 +439,9 @@ export function planShadowV2(
     // 旧替换块在 surface 上是一条 user/message；区间不包住它，每轮都会在
     // 它后面再插一块，块数随轮数线性涨，窗口永远不收窄。
     const keepSeqs = new Set(entries.slice(-FULL_KEEP_TAIL).map((entry) => entry.seq));
-    const nodes = Array.isArray(session?.surface?.nodes)
-      ? session.surface.nodes.filter((seq) => seq !== 0)
-      : [];
+    // 节点 0 是 system prompt：宿主只允许 system/message 恰好覆写它，
+    // 区间从节点 1 起算，不能把它包进来。
+    const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes.slice(1) : [];
     const cutIndex = nodes.findIndex((seq) => keepSeqs.has(seq));
     if (cutIndex <= 0) return null;
     covered = nodes.slice(0, cutIndex);
