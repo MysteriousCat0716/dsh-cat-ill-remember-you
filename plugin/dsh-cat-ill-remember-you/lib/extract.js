@@ -312,12 +312,16 @@ export function wantsImmediate(text) {
 }
 
 /**
- * 即时通道：一块完整了（user + 它的 assistant 回复都落库）立刻炼一条。
+ * 即时通道：一块完整了（user + 它的 assistant 回复都落库）之后炼一条。
  * 只处理它自己那一块，不碰待处理队列；炼完把这一块的 turns 标 consumed，
  * 免得空闲批通道再炼一遍。
+ *
+ * `reason` 让调用方知道要不要保留这个块：
+ * - `incomplete`：只有 user、回复还没落库——留着等静默窗补偿；
+ * - `no-candidate` / `skipped-kind`：规则不收，交回空闲批，不再占即时通道。
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {{sid:string, userSeq:number}} job
- * @returns {{memories:number, consumed:number}}
+ * @returns {{memories:number, consumed:number, reason:'ok'|'incomplete'|'no-candidate'|'skipped-kind'}}
  */
 export function refineBlock(db, { sid, userSeq }) {
   const rows = db
@@ -332,10 +336,17 @@ export function refineBlock(db, { sid, userSeq }) {
     if (blockTurns.length > 0 && row.role === 'user') break;
     blockTurns.push(row);
   }
-  if (blockTurns.length < 2) return { memories: 0, consumed: 0 };
+  if (blockTurns.length < 2) return { memories: 0, consumed: 0, reason: 'incomplete' };
 
   const candidate = candidateOf({ turns: blockTurns });
-  if (!candidate) return { memories: 0, consumed: 0 };
+  if (!candidate) return { memories: 0, consumed: 0, reason: 'no-candidate' };
+
+  // 即时通道只收「表态」——decision / preference。JUDGE 是宽词面判据，
+  // 「别」「原则上」「不要」这类也会命中，classify 却不一定判成表态；
+  // 那种块插进去是噪音，还把这轮原文标 consumed，让空闲批再也看不到。
+  if (candidate.kind !== 'decision' && candidate.kind !== 'preference') {
+    return { memories: 0, consumed: 0, reason: 'skipped-kind' };
+  }
 
   // insertMemory + markConsumed 必须一起提交，理由同 refine()。
   db.exec('BEGIN IMMEDIATE');
@@ -344,7 +355,7 @@ export function refineBlock(db, { sid, userSeq }) {
     if (id) upsertEntities(db, candidate.entities, candidate.t);
     markConsumed(db, candidate.ids);
     db.exec('COMMIT');
-    return { memories: id ? 1 : 0, consumed: candidate.ids.length };
+    return { memories: id ? 1 : 0, consumed: candidate.ids.length, reason: 'ok' };
   } catch (error) {
     try {
       db.exec('ROLLBACK');

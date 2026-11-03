@@ -3,10 +3,15 @@ import { evictOverflow, pushStack } from './context-stack.js';
 import { refineBlock, wantsImmediate } from './extract.js';
 
 /**
- * 即时通道的待办：sid -> 该块 user 行的 seq。
- * 进程重启会丢，漏掉的块留在待处理队列里，由空闲批兜底。
+ * 即时通道的待办：sid -> 该块待炼的 user 行 seq 集合 + 静默窗计时器。
+ * assistant 每落库一条就把窗口往后推；窗口到期才炼，多步回复因此能凑成一块
+ * （「我看看」→「动手」→「结论」不会被第一句就炼掉）。
+ * 进程重启丢 timer，漏掉的块留在待处理队列里，由空闲批兜底。
  */
 const pendingImmediate = new Map();
+
+/** 静默窗：最后一条 assistant 落库后再等这么久，认为这一轮说完了。 */
+const IMMEDIATE_QUIET_MS = 30_000;
 
 /** Fallback filter for old events that carry no `source` field. */
 export const INJECT_RE =
@@ -138,21 +143,69 @@ export function ingestEvent(db, session, event) {
     evictOverflow(db);
   }
   if (inserted > 0) {
-    // 即时通道：user 表态只做标记，等这一块的 assistant 落库再炼——那时结论
-    // 才在。炼完这一块的 turns 直接标 consumed，空闲批不会重复炼。
+    // 即时通道：user 表态只做标记，assistant 每落一条就把静默窗往后推。
+    // 早先的写法是「assistant 一落库就炼」，多步回复会在第一条（常常只是
+    // 「我看看」）就炼掉并标 consumed，后面的 assistant 反而成了无主孤儿块。
     if (role === 'user' && origin === 'chat' && wantsImmediate(storedText)) {
-      pendingImmediate.set(sid, seq);
+      const entry = pendingImmediate.get(sid);
+      if (entry) entry.userSeqs.add(seq);
+      else pendingImmediate.set(sid, { userSeqs: new Set([seq]), timer: null });
     } else if (role === 'assistant') {
-      const userSeq = pendingImmediate.get(sid);
-      if (userSeq !== undefined) {
-        pendingImmediate.delete(sid);
-        try {
-          refineBlock(db, { sid, userSeq });
-        } catch {
-          /* 即时提炼失败不能连累 ingest；漏掉的块由空闲批兜底 */
-        }
-      }
+      armImmediate(db, sid);
     }
   }
   return inserted;
+}
+
+/**
+ * 把某个会话的静默窗重新计时：最后一条 assistant 落库后 30s 才动手。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {string} sid
+ */
+function armImmediate(db, sid) {
+  const entry = pendingImmediate.get(sid);
+  if (!entry || entry.userSeqs.size === 0) return;
+  if (entry.timer) clearTimeout(entry.timer);
+  const timer = setTimeout(() => runImmediate(db, sid), IMMEDIATE_QUIET_MS);
+  // 不让一个待炼的块把进程钉住；真丢了由空闲批兜底。
+  if (typeof timer.unref === 'function') timer.unref();
+  entry.timer = timer;
+}
+
+/**
+ * 跑掉某个会话的待办块。
+ * 回复还没落库的块留在待办里，等下一条 assistant 落库时重新起窗；
+ * 其余（已炼 / 规则不收）交回空闲批，不再占即时通道。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {string} sid
+ * @returns {{memories:number}}
+ */
+function runImmediate(db, sid) {
+  const entry = pendingImmediate.get(sid);
+  if (!entry) return { memories: 0 };
+  pendingImmediate.delete(sid);
+  if (entry.timer) clearTimeout(entry.timer);
+  const keep = new Set();
+  let memories = 0;
+  for (const userSeq of entry.userSeqs) {
+    try {
+      const result = refineBlock(db, { sid, userSeq });
+      memories += result.memories;
+      if (result.reason === 'incomplete') keep.add(userSeq);
+    } catch {
+      /* 即时提炼不能连累 ingest；漏掉的块由空闲批兜底 */
+    }
+  }
+  if (keep.size > 0) pendingImmediate.set(sid, { userSeqs: keep, timer: null });
+  return { memories };
+}
+
+/**
+ * 不等静默窗，立刻跑掉某个会话的待办块。测试和插件退出时用。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {string} sid
+ * @returns {{memories:number}}
+ */
+export function flushImmediate(db, sid) {
+  return runImmediate(db, sid);
 }
