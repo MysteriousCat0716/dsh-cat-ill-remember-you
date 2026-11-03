@@ -60,8 +60,13 @@ function envInt(name, fallback) {
 }
 export const REFERRAL = /(那个|这个|它|上面|刚才|之前|前面|上次|这里|那些|这些|这事|那句)/;
 
-const CONDENSE_USER = 100;
-const CONDENSE_ASSISTANT = 140;
+// 替换块是模型唯一能看到的旧历史。定长取前 N 字会把结论砍掉（缺陷文档第 1 条
+// 有实证：seq 414 / 399 的结论都在后三分之一）。改成保首句 + 保尾句，中段按句
+// 从后往前填——结论几乎总在最后一句，所以尾巴是必保的。
+const CONDENSE_HEAD = 50;
+const CONDENSE_TAIL = 80;
+const CONDENSE_USER = 120;
+const CONDENSE_ASSISTANT = 200;
 const CONDENSE_TOOL = 100;
 
 /** @param {string} text */
@@ -147,16 +152,41 @@ export function splitKeep(entries, keep = DEFAULT_KEEP) {
   };
 }
 
-function condense(entry) {
-  if (entry.role === 'user') return clip(entry.text, CONDENSE_USER);
-  if (entry.role === 'assistant') {
-    const parts = String(entry.text ?? '')
-      .split(/\n+/)
-      .map(squash)
-      .filter(Boolean);
-    return clip(parts.at(-1) ?? entry.text ?? '', CONDENSE_ASSISTANT);
+/**
+ * 首句 + 尾句 + 中段按句从后往前填。预算不够时宁可只保首尾，
+ * 也不退回「取前 N 字」——那样丢的恰好是结论。
+ * @param {string} text
+ * @param {number} budget
+ */
+function condenseBody(text, budget) {
+  const s = squash(text);
+  if (s.length <= budget) return s;
+  // 按比例分：短消息（user）也要给尾巴留够位置。
+  const head = Math.max(8, Math.min(CONDENSE_HEAD, Math.floor(budget * 0.35)));
+  const tail = Math.max(8, Math.min(CONDENSE_TAIL, Math.floor(budget * 0.4)));
+  const middleBudget = budget - head - tail - 2; // 两个省略号
+  const headText = s.slice(0, head);
+  const tailText = s.slice(s.length - tail);
+  if (middleBudget < 8) return `${headText}…${tailText}`;
+  const middle = s.slice(head, s.length - tail);
+  const sentences = middle
+    .split(/(?<=[。；！？!?])/)
+    .map(squash)
+    .filter(Boolean);
+  let picked = '';
+  for (let i = sentences.length - 1; i >= 0; i -= 1) {
+    const piece = sentences[i];
+    if (picked.length + piece.length > middleBudget) break;
+    picked = piece + picked;
   }
-  return clip(entry.text, CONDENSE_TOOL);
+  return picked ? `${headText}…${picked}…${tailText}` : `${headText}…${tailText}`;
+}
+
+function condense(entry) {
+  if (entry.role === 'user') return condenseBody(entry.text, CONDENSE_USER);
+  // 旧实现只留 assistant 的最后一段（按换行切），首句和中间的全丢。
+  if (entry.role === 'assistant') return condenseBody(entry.text, CONDENSE_ASSISTANT);
+  return condenseBody(entry.text, CONDENSE_TOOL);
 }
 
 /**

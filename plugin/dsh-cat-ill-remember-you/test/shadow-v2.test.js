@@ -516,6 +516,20 @@ test('planShadowV2: 会话不在白名单时什么都不做', async () => {
   }
 });
 
+test('renderReplacement: 长回复保首句和尾句，结论不再被截掉', () => {
+  const head = '我先看了 lib 下的实现，';
+  const middle = '这一段是中间过程。'.repeat(20);
+  const tail = '结论是缓存按 mtime 失效就够了。';
+  const entries = [
+    { seq: 1, role: 'user', text: '缓存这块怎么改' },
+    { seq: 2, role: 'assistant', text: `${head}${middle}${tail}` },
+  ];
+  const text = renderReplacement(entries);
+  assert.match(text, /我先看了 lib 下的实现/);
+  assert.match(text, /结论是缓存按 mtime 失效就够了/);
+  assert.ok(text.length <= MAX_REPLACE_CHARS);
+});
+
 test('renderReplacement: 约定句原样留在「约定：」段', () => {
   const entries = [
     { seq: 1, role: 'user', text: '以后不要主动压记忆，压缩要单独一轮。' },
