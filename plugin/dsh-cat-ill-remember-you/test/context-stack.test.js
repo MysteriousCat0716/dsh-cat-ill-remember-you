@@ -110,7 +110,7 @@ test('renderStack: 全局段按会话取，本会话单独补一段', () => {
     insertTurn(db, { sid, seq: 1, text: `别处第${index}句`, t: 2000 + index });
     pushStack(db, { sid, seq: 1, t: 2000 + index });
   }
-  const text = renderStack(db, { sid: 's-me', limit: 20, localExtra: 10, raw: 0 });
+  const text = renderStack(db, { sid: 's-me', limit: 20, raw: 0 });
   assert.match(text, /【本会话】/);
   assert.match(text, /本会话第一句/);
   // 全局段里不该出现本会话那三条。
@@ -119,30 +119,28 @@ test('renderStack: 全局段按会话取，本会话单独补一段', () => {
   db.close();
 });
 
-test('renderStack: 按会话新→旧分配 6/5/4/3/2/1 条，长会话不再占满窗口', () => {
+test('renderStack: 按会话字数预算取整轮，长会话不占满窗口', () => {
   const db = openStore(':memory:');
-  // 会话 A 最新但很长（10 条），只该拿 6 条。
-  for (let seq = 1; seq <= 10; seq += 1) {
-    insertTurn(db, { sid: 's-a', seq, text: `A第${seq}条`, t: 1000 + seq });
-    pushStack(db, { sid: 's-a', seq, t: 1000 + seq });
+  // 会话 A 最新但很长：每条 100 字，900 字预算装不下全部 12 条。
+  for (let seq = 1; seq <= 12; seq += 1) {
+    insertTurn(db, { sid: 's-a', seq, text: `A第${seq}条${'长'.repeat(90)}`, t: 3000 + seq });
+    pushStack(db, { sid: 's-a', seq, t: 3000 + seq });
   }
-  // 会话 B 与 C 各 8 条，分别该拿 5 条、4 条。
-  for (const [sid, base] of [['s-b', 2000], ['s-c', 3000]]) {
+  // 会话 B / C 各 8 条短句，各自的预算装得下。
+  for (const [sid, base] of [['s-b', 2000], ['s-c', 1000]]) {
     for (let seq = 1; seq <= 8; seq += 1) {
       insertTurn(db, { sid, seq, text: `${sid}第${seq}条`, t: base + seq });
       pushStack(db, { sid, seq, t: base + seq });
     }
   }
-  // 会话时间：C 最新（3001+）、B 次新、A 最旧（1001+）。
-  const text = renderStack(db, { sid: 's-me', limit: 30, localExtra: 0, raw: 0 });
+  const text = renderStack(db, { sid: 's-me', limit: 30, raw: 0 });
   const globalPart = text.split('【本会话】')[0];
-  const count = (mark) => (globalPart.match(new RegExp(mark, 'g')) || []).length;
-  assert.equal(count('s-c第'), 6);
-  assert.equal(count('s-b第'), 5);
-  assert.equal(count('A第'), 4);
-  // 取的是各自的尾部，不是开头。
+  // 最新的长会话只留尾部，最早的几条被预算挡掉。
+  assert.match(globalPart, /A第12条/);
+  assert.doesNotMatch(globalPart, /A第1条/);
+  // 它没有把窗口吃光：更早的两个会话照样有代表。
+  assert.match(globalPart, /s-b第8条/);
   assert.match(globalPart, /s-c第8条/);
-  assert.doesNotMatch(globalPart, /s-c第1条/);
   db.close();
 });
 

@@ -4,20 +4,22 @@ export const STACK_MARK = '[全局上下文]';
 /** 栈容量：跨会话按时间保留最近这么多条指针。 */
 export const STACK_LIMIT = 50;
 
-/** 每次注入取多少条指针。 */
+/** 每轮注入的条数安全上限：只做汇报与兜底，主约束是字数。 */
 export const INJECT_LIMIT = 30;
 
 /**
- * 按会话「新→旧」各取几条：最新会话 6 条、次新 5 条……第六新 1 条，共 21 条。
- * 全局按时间取的问题是「会话长度决定占位」——一个长会话能占满整个窗口；
- * 按会话分组后，每个最近的会话都有代表，越新给得越多（接续最需要上一个会话的结尾）。
+ * 每个会话的字数预算，按「新→旧」递减。
+ * 成本跟字数走，条数是它的不稳定估计；比例承接原来的 6/5/4/3/2/1。
  */
-export const SESSION_STEPS = [6, 5, 4, 3, 2, 1];
+export const SESSION_BUDGETS = [900, 700, 550, 450, 350, 250];
 
-/** 全局之外，最多再补多少条本会话更早的指针（21 + 9 = 30）。 */
+/** 本会话段（更早的行）从总预算里切走的一块。 */
+export const LOCAL_BUDGET = 600;
+
+/** readLocalStack 的默认条数（旧调用方还在用）。 */
 export const LOCAL_EXTRA = 9;
 
-/** 注入时的总字数硬顶；条数够了但太长就只取最近几条。 */
+/** 注入时的总字数硬顶——安全网，不是分配依据。 */
 export const STACK_MAX_CHARS = 3000;
 
 /**
@@ -213,126 +215,154 @@ export function readLocalStack(db, { sid = '', limit = LOCAL_EXTRA, exclude = ne
   return rows.filter((row) => !exclude.has(`${row.sid}:${row.seq}`)).slice(0, cap);
 }
 
-/**
- * 按会话取尾部：会话按最近时间新→旧排，第 1 个取 steps[0] 条、第 2 个 steps[1] 条……
- * 每个会话取的都是它自己的尾部（最近的几条），返回按时间正序。
- * 会话不够就少取，不硬凑——凑数会引入噪音。
- * @param {import('node:sqlite').DatabaseSync} db
- * @param {{excludeSid?:string, steps?:number[]}} [options]
- */
-export function readStackBySession(db, { excludeSid = '', steps = SESSION_STEPS } = {}) {
-  const sessions = db
-    .prepare('SELECT sid, MAX(t) AS mt FROM context_stack GROUP BY sid ORDER BY mt DESC')
-    .all();
-  const picked = [];
-  let slot = 0;
-  for (const session of sessions) {
-    if (slot >= steps.length) break;
-    // 本会话由「【本会话更早】」单独补，不占这里的名额。
-    if (String(session.sid) === String(excludeSid)) continue;
-    const cap = Math.max(1, Math.floor(Number(steps[slot]) || 1));
-    const rows = db
-      .prepare(
-        `SELECT s.sid, s.seq, s.t, s.evicted, s.summary, t.role, t.text
-         FROM context_stack s
-         LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
-         WHERE s.sid = ?
-         ORDER BY s.t DESC, s.id DESC
-         LIMIT ?`,
-      )
-      .all(String(session.sid), cap)
-      .reverse();
-    picked.push(...rows);
-    slot += 1;
+/** 按轮切分：一条 user 开启新轮，其余行跟上一条 user。 */
+function splitRounds(rows) {
+  const rounds = [];
+  for (const row of rows) {
+    if (rounds.length === 0 || row.role === 'user') rounds.push([row]);
+    else rounds[rounds.length - 1].push(row);
   }
-  return picked.sort((a, b) => a.t - b.t);
+  return rounds;
+}
+
+/** 渲染一行。isRaw 为真用原文，否则用出栈摘要或节选。 */
+function renderRow(row, { isRaw, rawChars, oldChars, sid }) {
+  const source = plainText(row.text);
+  const text = isRaw ? clip(source, rawChars) : clip(row.summary ? plainText(row.summary) : source, oldChars);
+  // 有真摘要才叫「旧·摘要」；只是原文截断的标「节选」，不撒谎。
+  const tag = isRaw ? '' : row.summary ? '（旧·摘要）' : '（节选）';
+  const who = row.role === 'user' ? '用户' : '助手';
+  const mark = sid && String(row.sid) === String(sid) ? '' : ` ${String(row.sid).slice(-6)}`;
+  return `- ${clock(row.t)}${mark} ${who}${tag}：${text}`;
 }
 
 /**
- * 把栈渲染成注入块：最近 raw 条用原文，出了栈的用摘要。
- * 全局段按会话「新→旧」取 6/5/4/3/2/1 条；本会话不占名额，另补最多 localExtra 条。
+ * 从尾部往回按「整轮」装：一轮的行要么全进要么全不进。
+ * 最新一轮无论如何都留（哪怕单轮就超预算），再往回超了就停。
+ * 必须从新往旧装——旧实现从最旧那头装、超了 break，丢掉的正好是最新的行。
+ */
+function pickRounds(rows, { budget, rawRounds = 0, rawChars = 220, oldChars = 140, sid = '' }) {
+  const rounds = splitRounds(rows);
+  const rawFrom = Math.max(0, rounds.length - rawRounds);
+  const picked = [];
+  let used = 0;
+  for (let index = rounds.length - 1; index >= 0; index -= 1) {
+    const block = rounds[index].map((row) => {
+      const isRaw = index >= rawFrom && !row.evicted;
+      return {
+        t: row.t,
+        key: `${row.sid}:${row.seq}`,
+        raw: isRaw,
+        line: renderRow(row, { isRaw, rawChars, oldChars, sid }),
+      };
+    });
+    const size = block.reduce((sum, item) => sum + item.line.length + 1, 0);
+    if (picked.length > 0 && used + size > budget) break;
+    picked.push(...block);
+    used += size;
+  }
+  return picked;
+}
+
+/** 某个会话在栈里的全部行，按时间正序。 */
+function readSessionRows(db, sid) {
+  return db
+    .prepare(
+      `SELECT s.sid, s.seq, s.t, s.evicted, s.summary, t.role, t.text
+       FROM context_stack s
+       LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
+       WHERE s.sid = ?
+       ORDER BY s.t ASC, s.id ASC`,
+    )
+    .all(String(sid));
+}
+
+/** 栈里出现过的会话，按最近时间新→旧。 */
+function listSessions(db) {
+  return db
+    .prepare('SELECT sid, MAX(t) AS mt FROM context_stack GROUP BY sid ORDER BY mt DESC')
+    .all();
+}
+
+/** 超了就从最旧的开始丢——丢的必须是旧的那头。 */
+function trimOldest(items, { maxChars, maxItems }) {
+  let total = items.reduce((sum, item) => sum + item.line.length + 1, 0);
+  let start = 0;
+  while (start < items.length - 1 && (total > maxChars || items.length - start > maxItems)) {
+    total -= items[start].line.length + 1;
+    start += 1;
+  }
+  return items.slice(start);
+}
+
+/**
+ * 把栈渲染成注入块。
+ * 主约束是字数：每个会话有自己的预算，从尾部按整轮往回装；条数只做汇报。
+ * 本会话不占全局名额，从总预算里另切一块。
  * @param {import('node:sqlite').DatabaseSync} db
- * @param {{sid?:string, limit?:number, localExtra?:number, raw?:number, rawChars?:number, oldChars?:number, maxChars?:number}} [options]
+ * @param {{sid?:string, limit?:number, raw?:number, rawChars?:number, oldChars?:number, maxChars?:number, budgets?:number[], localBudget?:number}} [options]
  */
 export function renderStack(
   db,
   {
     sid = '',
     limit = INJECT_LIMIT,
-    localExtra = LOCAL_EXTRA,
     raw = STACK_RAW,
     rawChars = 220,
     oldChars = 140,
     maxChars = STACK_MAX_CHARS,
-    bySession = true,
+    budgets = SESSION_BUDGETS,
+    localBudget = LOCAL_BUDGET,
   } = {},
 ) {
-  // 全局段按会话分组取尾部：最新会话 6 条、次新 5 条……，再转成「旧→新」。
-  // 库里只有一个会话时分组段是空的，退回按时间取，别把唯一的会话也丢了。
-  let rows = bySession
-    ? readStackBySession(db, { excludeSid: sid })
-    : readStack(db, { limit }).slice().reverse();
-  if (rows.length === 0) rows = readStack(db, { limit }).slice().reverse();
-  if (rows.length > limit) rows = rows.slice(rows.length - limit);
-  if (rows.length === 0) return '';
-  // raw 的语义是「轮」不是「条」：从最后一条 user 往前数 raw 个 user，
-  // 这个区间内的行全用原文。一轮多步回复不会再把自己的提问挤成摘要。
-  let rawFrom = rows.length;
-  if (raw > 0) {
-    let seen = 0;
-    for (let index = rows.length - 1; index >= 0; index -= 1) {
-      if (rows[index].role === 'user') {
-        seen += 1;
-        if (seen === raw) {
-          rawFrom = index;
-          break;
-        }
-      }
-    }
-    if (seen < raw) rawFrom = 0;
+  const globalItems = [];
+  let slot = 0;
+  for (const session of listSessions(db)) {
+    if (slot >= budgets.length) break;
+    // 本会话由下面的【本会话】段单独补，不占全局名额。
+    if (sid && String(session.sid) === String(sid)) continue;
+    const rows = readSessionRows(db, session.sid);
+    if (rows.length === 0) continue;
+    globalItems.push(
+      ...pickRounds(rows, {
+        budget: budgets[slot],
+        // 只有最新会话的结尾用原文——那是「接上」最需要的。
+        rawRounds: slot === 0 ? raw : 0,
+        rawChars,
+        oldChars,
+        sid,
+      }),
+    );
+    slot += 1;
   }
-  const out = [];
-  let used = 0;
-  const push = (line) => {
-    // 最近的一条无论如何都留着；之后超字数就停，宁可少几条也不撑爆。
-    if (out.length > 0 && used + line.length > maxChars) return false;
-    out.push(line);
-    used += line.length;
-    return true;
-  };
-  for (let index = 0; index < rows.length; index += 1) {
-    const row = rows[index];
-    const newest = index >= rawFrom && !row.evicted;
-    const who = row.role === 'user' ? '用户' : '助手';
-    const source = plainText(row.text);
-    const text = newest ? clip(source, rawChars) : clip(row.summary ? plainText(row.summary) : source, oldChars);
-    // 有真摘要才叫「旧·摘要」；只是原文截断的标「节选」，不撒谎。
-    const tag = newest ? '' : row.summary ? '（旧·摘要）' : '（节选）';
-    if (!push(`- ${clock(row.t)} ${String(row.sid).slice(-6)} ${who}${tag}：${text}`)) break;
+
+  // 库里只有本会话时全局段会空（新会话第一轮就是这样）；退回按时间取，别空着。
+  if (globalItems.length === 0) {
+    const rows = readStack(db, { limit: STACK_LIMIT }).slice().reverse();
+    globalItems.push(...pickRounds(rows, { budget: maxChars, rawRounds: raw, rawChars, oldChars, sid }));
   }
-  const head = `${STACK_MARK} 最近 ${out.length} 条（${bySession ? '按会话新→旧 6/5/4/3/2/1' : '跨会话'}，按时间正序；最近 ${Math.min(rows.length - rawFrom, out.length)} 条原文）`;
+
+  globalItems.sort((a, b) => a.t - b.t);
+  const globals = trimOldest(globalItems, { maxChars, maxItems: limit });
+  const usedGlobal = globals.reduce((sum, item) => sum + item.line.length + 1, 0);
+
+  let locals = [];
+  if (sid && localBudget > 0) {
+    const keys = new Set(globals.map((item) => item.key));
+    const rows = readSessionRows(db, sid).filter((row) => !keys.has(`${row.sid}:${row.seq}`));
+    const localItems = pickRounds(rows, { budget: localBudget, rawRounds: 0, rawChars, oldChars, sid });
+    localItems.sort((a, b) => a.t - b.t);
+    locals = trimOldest(localItems, {
+      maxChars: Math.max(0, maxChars - usedGlobal),
+      maxItems: Math.max(0, limit - globals.length),
+    });
+  }
+
+  const rawCount = [...globals, ...locals].filter((item) => item.raw).length;
+  const head = `${STACK_MARK} 最近 ${globals.length + locals.length} 条（每会话按字数预算取整轮；最近 ${rawCount} 条原文）`;
   const parts = [head];
-  if (out.length > 0) parts.push(out.join('\n'));
-  const local =
-    sid && localExtra > 0
-      ? readLocalStack(db, {
-          sid,
-          limit: localExtra,
-          exclude: new Set(rows.map((row) => `${row.sid}:${row.seq}`)),
-        })
-      : [];
-  if (local.length > 0) {
-    const localLines = [];
-    for (const row of local.slice().reverse()) {
-      const text = clip(row.summary ? plainText(row.summary) : plainText(row.text), oldChars);
-      const tag = row.summary ? '（旧·摘要）' : '（节选）';
-      const line = `- ${clock(row.t)} ${row.role === 'user' ? '用户' : '助手'}${tag}：${text}`;
-      if (used + line.length > maxChars) break;
-      localLines.push(line);
-      used += line.length;
-    }
-    if (localLines.length > 0) parts.push('【本会话】', ...localLines);
-  }
+  if (globals.length > 0) parts.push(globals.map((item) => item.line).join('\n'));
+  if (locals.length > 0) parts.push('【本会话】', ...locals.map((item) => item.line));
   return parts.join('\n');
 }
 
