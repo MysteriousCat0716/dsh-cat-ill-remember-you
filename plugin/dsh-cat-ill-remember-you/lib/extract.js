@@ -123,15 +123,26 @@ export function entitiesOf(text) {
 }
 
 /**
+ * 表态词：决定/偏好这两类，只有用户自己说过才算「用户的决定」。
+ * classify() 拿 user + assistant 的合并文本判类，所以一条决定常常
+ * 是助手替用户总结出来的；那种条目的 subject 是 assistant，不是 user。
+ */
+const ATTITUDE =
+  /决定|定了|就这样|采用|选用|还是用|以后|下次|记住|不再|改成|必须|规则|约定|偏好|更喜欢|讨厌|不喜欢|受不了|烦死|最爱/;
+
+/**
  * Who a memory is about: the human or the assistant.
- * The summary/body of a candidate comes from the human turn whenever there is
- * one, so the subject follows the summary's source instead of comparing lengths.
- * A block with only an assistant turn is about the assistant.
+ * 普通事实看来源（有 user 就是 user）；决定和偏好要看表态词在谁嘴里。
  * @param {string} userText
+ * @param {string} kind
  * @returns {'user'|'assistant'}
  */
-function subjectOf(userText) {
-  return userText ? 'user' : 'assistant';
+function subjectOf(userText, kind) {
+  const text = String(userText ?? '');
+  if (kind === 'decision' || kind === 'preference') {
+    return ATTITUDE.test(text) ? 'user' : 'assistant';
+  }
+  return text ? 'user' : 'assistant';
 }
 
 /**
@@ -208,7 +219,7 @@ export function candidateOf(block) {
   return {
     kind,
     origin: user?.origin ?? 'chat',
-    subject: subjectOf(userText),
+    subject: subjectOf(userText, kind),
     text: allText.slice(0, 2000),
     summary,
     entities: entitiesOf(allText),
@@ -291,13 +302,51 @@ function supersedesFor(db, item) {
 }
 
 /** @param {DatabaseSync} db */
+/**
+ * 同一话题反复说：不复制正文，只升票数。
+ * 判据是「同 kind + 共享一个低频实体」——高频实体（猫、岸、dsh）几乎每条
+ * 都有，拿它当主题会把无关记忆并到一起。30 天窗口之外的旧事不合并，
+ * 免得半年前的决定被今天一句闲聊盖住。
+ */
+function sameTopicFor(db, item) {
+  const entities = Array.isArray(item.entities) ? item.entities : [];
+  if (entities.length === 0) return null;
+  const placeholders = entities.map(() => '?').join(',');
+  const rows = db
+    .prepare(`SELECT name, mentions FROM entities WHERE name IN (${placeholders})`)
+    .all(...entities);
+  const freq = new Map(rows.map((row) => [String(row.name), Number(row.mentions) || 0]));
+  const credible = entities.filter((name) => (freq.get(name) ?? 0) <= 5);
+  if (credible.length === 0) return null;
+  const recent = db
+    .prepare(
+      "SELECT id, entities FROM memories WHERE kind = ? AND tier = 'active' AND t >= ? ORDER BY t DESC LIMIT 30",
+    )
+    .all(item.kind, Number(item.t) - 30 * 24 * 3600 * 1000);
+  for (const row of recent) {
+    const have = namesOf(row.entities);
+    if (credible.some((name) => have.includes(name))) return Number(row.id);
+  }
+  return null;
+}
+
 function insertMemory(db, item) {
+  // 改口和「同一话题重复」要分开：改口必须插新条并挂链，否则新决定
+  // 会被并进旧条里，supersedes 永远用不上。
+  const supersedes = item.supersedes ?? supersedesFor(db, item);
+  const merged = supersedes ? null : sameTopicFor(db, item);
+  if (merged) {
+    db.prepare('UPDATE memories SET mentions = mentions + 1, last_used = ? WHERE id = ?').run(
+      item.t,
+      merged,
+    );
+    return { id: merged, inserted: false };
+  }
   const stmt = db.prepare(
     'INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, retention, t, source_sid, source_seq, confidence, supersedes, rule_ver) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
   // 只在明确改口时记链；旧条不降级，等 used 数据说话。
-  const supersedes = item.supersedes ?? supersedesFor(db, item);
   const result = stmt.run(
     item.kind,
     item.origin ?? 'chat',
@@ -316,7 +365,7 @@ function insertMemory(db, item) {
     supersedes,
     item.rule_ver ?? RULE_VER,
   );
-  return Number(result.lastInsertRowid ?? 0);
+  return { id: Number(result.lastInsertRowid ?? 0), inserted: true };
 }
 
 /**
@@ -348,8 +397,8 @@ export function refine(db, opts = {}) {
     for (const block of blocks) {
       const candidate = candidateOf(block);
       if (!candidate) continue;
-      const id = insertMemory(db, candidate);
-      if (id) {
+      const { inserted } = insertMemory(db, candidate);
+      if (inserted) {
         upsertEntities(db, candidate.entities, candidate.t);
         memories += 1;
       }
@@ -421,11 +470,11 @@ export function refineBlock(db, { sid, userSeq }) {
   // insertMemory + markConsumed 必须一起提交，理由同 refine()。
   db.exec('BEGIN IMMEDIATE');
   try {
-    const id = insertMemory(db, candidate);
-    if (id) upsertEntities(db, candidate.entities, candidate.t);
+    const { inserted } = insertMemory(db, candidate);
+    if (inserted) upsertEntities(db, candidate.entities, candidate.t);
     markConsumed(db, candidate.ids);
     db.exec('COMMIT');
-    return { memories: id ? 1 : 0, consumed: candidate.ids.length, reason: 'ok' };
+    return { memories: inserted ? 1 : 0, consumed: candidate.ids.length, reason: 'ok' };
   } catch (error) {
     try {
       db.exec('ROLLBACK');
@@ -434,4 +483,18 @@ export function refineBlock(db, { sid, userSeq }) {
     }
     throw error;
   }
+}
+
+/**
+ * 回炉的键：规则升级后只扫 `rule_ver` 比当前旧的行，不重炼全库。
+ * 现在只暴露查询——要不要改写这些行，等 used 数据和回放集一起看。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {string} [ver]
+ */
+export function pendingReforge(db, ver = RULE_VER) {
+  return db
+    .prepare(
+      'SELECT id, kind, subject, summary, rule_ver FROM memories WHERE rule_ver < ? ORDER BY id',
+    )
+    .all(ver);
 }

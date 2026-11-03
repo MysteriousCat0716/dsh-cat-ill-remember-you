@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS memories (
   source_seq INTEGER,
   confidence TEXT NOT NULL DEFAULT 'explicit',
   supersedes INTEGER,
-  rule_ver   TEXT    NOT NULL DEFAULT 'r0'
+  rule_ver   TEXT    NOT NULL DEFAULT 'r0',
+  -- 同一话题被反复说：不复制正文，只升票数。≥3 进 persona 建议清单。
+  mentions   INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories (tier, last_used);
 
@@ -212,6 +214,7 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'memories', 'confidence', "TEXT NOT NULL DEFAULT 'explicit'");
     ensureColumn(db, 'memories', 'supersedes', 'INTEGER');
     ensureColumn(db, 'memories', 'rule_ver', "TEXT NOT NULL DEFAULT 'r0'");
+    ensureColumn(db, 'memories', 'mentions', 'INTEGER NOT NULL DEFAULT 1');
     ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'turns', 'cwd', "TEXT NOT NULL DEFAULT ''");
     ensureColumn(db, 'shadow_v2', 'applied', 'INTEGER NOT NULL DEFAULT 0');

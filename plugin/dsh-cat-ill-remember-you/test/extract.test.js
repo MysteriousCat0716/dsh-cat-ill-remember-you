@@ -9,6 +9,7 @@ import {
   entitiesOf,
   candidateOf,
   refine,
+  pendingReforge,
 } from '../lib/extract.js';
 
 function turn(over = {}) {
@@ -231,5 +232,55 @@ test('refine: 明确改口时记 supersedes 链，旧条仍 active', () => {
   assert.equal(fresh.supersedes, oldId);
   const before = db.prepare('SELECT tier FROM memories WHERE id = ?').get(oldId);
   assert.equal(before.tier, 'active', '旧条不降级，等 used 数据说话');
+  db.close();
+});
+
+test('candidateOf: 决定是助手总结的，subject 记 assistant', () => {
+  const c = candidateOf({
+    turns: [
+      turn({ role: 'user', text: '嗯，就按你说的办。' }),
+      turn({ id: 2, role: 'assistant', text: '那就这样定了：以后锚点从整句抽，缓存按 mtime 失效。' }),
+    ],
+  });
+  assert.equal(c.kind, 'decision');
+  assert.equal(c.subject, 'assistant', '表态词不在用户嘴里，这条不是他的决定');
+});
+
+test('candidateOf: 用户自己说「以后」，subject 仍是 user', () => {
+  const c = candidateOf({
+    turns: [
+      turn({ role: 'user', text: '以后锚点都从整句抽，不要再切成片段。' }),
+      turn({ id: 2, role: 'assistant', text: '好。' }),
+    ],
+  });
+  assert.equal(c.kind, 'decision');
+  assert.equal(c.subject, 'user');
+});
+
+test('refine: 同一话题反复说不复制正文，只升票数', () => {
+  const db = openStore(':memory:');
+  insertTurn(db, { sid: 's1', seq: 1, role: 'user', text: '以后 Ollama 只用来算向量，不做生成。', t: 1000 });
+  insertTurn(db, { sid: 's1', seq: 2, role: 'assistant', text: '好。', t: 1001 });
+  refine(db);
+  insertTurn(db, { sid: 's1', seq: 3, role: 'user', text: '以后 Ollama 还是只算向量。', t: 2000 });
+  insertTurn(db, { sid: 's1', seq: 4, role: 'assistant', text: '对。', t: 2001 });
+  refine(db);
+  const rows = db.prepare('SELECT id, mentions FROM memories').all();
+  assert.equal(rows.length, 1, '同一话题不复制第二条');
+  assert.equal(Number(rows[0].mentions), 2, '票数升到 2');
+  db.close();
+});
+
+test('pendingReforge: 只返回 rule_ver 比当前旧的行', () => {
+  const db = openStore(':memory:');
+  db.prepare(
+    "INSERT INTO memories (kind, text, summary, t, rule_ver) VALUES ('fact', '旧', '旧', 1, 'r0')",
+  ).run();
+  db.prepare(
+    "INSERT INTO memories (kind, text, summary, t, rule_ver) VALUES ('fact', '新', '新', 2, 'r1')",
+  ).run();
+  const rows = pendingReforge(db);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].rule_ver, 'r0');
   db.close();
 });
