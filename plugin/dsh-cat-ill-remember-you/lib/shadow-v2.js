@@ -496,12 +496,14 @@ export function planShadowV2(
     roll = process.env.DSH_MEMORY_CORE_ROLL !== '0',
   } = {},
 ) {
-  const entries = surfaceMessages(session);
   const sid = sidOf(session);
   // 白名单外不记账：这些会话不会真替换，账本只会随宿主压缩反复增行。
   // 「只看会怎么换」的推演也放进白名单会话里做，别让它变成噪音。
+  // 先判白名单再遍历：白名单外的会话占绝大多数，之前每次都要把整段
+  // surface 走一遍才发现不记账。
   const mode = replaceMode(sid);
   if (mode === 'off') return null;
+  const entries = surfaceMessages(session);
   let replaced;
   let kept;
   let rangeStart = null;

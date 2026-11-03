@@ -57,12 +57,16 @@ function recentTexts(messages, limit = 6) {
   return out;
 }
 
-const LOG_FILE = path.join(os.homedir(), '.dsh', 'cache', 'ill-remember-you.log');
+// 日志路径每次现算：测试和插件自检要能指到临时目录，不能写进真实用户目录。
+function logFile() {
+  return process.env.DSH_MEMORY_CORE_LOG || path.join(os.homedir(), '.dsh', 'cache', 'ill-remember-you.log');
+}
 
 function log(line) {
   try {
-    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-    fs.appendFileSync(LOG_FILE, `${new Date().toISOString()} ${line}\n`);
+    const file = logFile();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
   } catch {
     /* logging must never break the plugin */
   }
