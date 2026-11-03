@@ -112,6 +112,7 @@ function rowToItem(row, source) {
     entities: parseList(row.entities),
     why: '',
     scene: sceneOf(row.why),
+    confidence: row.confidence ?? 'explicit',
   };
 }
 
@@ -122,7 +123,7 @@ function rowToItem(row, source) {
 function personaOf(db) {
   const rows = db
     .prepare(
-      `SELECT id, kind, summary, text, entities, anchors, t FROM memories
+      `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
        WHERE tier = 'active' AND origin = 'chat' AND kind IN ('preference', 'decision')
        ORDER BY t DESC LIMIT 100`,
     )
@@ -228,7 +229,7 @@ export async function retrieve(
     const marks = query.entities.map(() => '?').join(',');
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
          WHERE tier = 'active' AND origin = 'chat'
            AND EXISTS (SELECT 1 FROM json_each(memories.entities) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
@@ -252,7 +253,7 @@ export async function retrieve(
     const marks = toolAnchors.map(() => '?').join(',');
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
          WHERE tier = 'active' AND origin = 'chat'
            AND EXISTS (SELECT 1 FROM json_each(memories.anchors) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
@@ -273,7 +274,7 @@ export async function retrieve(
   // L1: the newest three distilled memories double as the sliding cache.
   const cacheRows = db
     .prepare(
-      `SELECT id, kind, summary, text, entities, anchors, t FROM memories
+      `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
        WHERE tier = 'active' AND origin = 'chat' ORDER BY t DESC LIMIT ?`,
     )
     .all(CACHE_SIZE);
@@ -300,7 +301,7 @@ export async function retrieve(
   if (clauses.length) {
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
          WHERE tier = 'active' AND origin = 'chat' AND (${clauses.join(' OR ')})
          ORDER BY t DESC LIMIT 8`,
       )
@@ -336,7 +337,7 @@ export async function retrieve(
           if (candidate.score < 0.55) continue;
           const row = db
             .prepare(
-              `SELECT id, kind, summary, text, entities, anchors, t FROM memories
+              `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
                WHERE id = ? AND tier = 'active' AND origin = 'chat'`,
             )
             .get(candidate.memory_id);
@@ -366,7 +367,7 @@ export async function retrieve(
       const values = terms.map((term) => `%${escapeLike(term)}%`);
       const rows = db
         .prepare(
-          `SELECT id, kind, summary, text, entities, anchors, t FROM memories
+          `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
            WHERE tier = 'active' AND origin = 'chat' AND (${like})
            ORDER BY t DESC LIMIT 1`,
         )
@@ -465,7 +466,10 @@ export function renderHint(hits) {
     list.forEach((hit, index) => {
       const when = hit.t ? new Date(hit.t).toISOString().slice(0, 10) : '';
       const kind = hit.kind === 'user' ? '原话' : hit.kind === 'assistant' ? '旧回复' : hit.kind;
-      lines.push(`${index + 1}. （${kind}${when ? ` · ${when}` : ''}）${hit.summary}`);
+      // 转述/未核实不装成原话：引用它时先留余地。
+      const conf =
+        hit.confidence === 'reported' ? ' · 转述' : hit.confidence === 'uncertain' ? ' · 未核实' : '';
+      lines.push(`${index + 1}. （${kind}${when ? ` · ${when}` : ''}${conf}）${hit.summary}`);
       if (hit.scene) lines.push(`   当时：${hit.scene}`);
     });
   };

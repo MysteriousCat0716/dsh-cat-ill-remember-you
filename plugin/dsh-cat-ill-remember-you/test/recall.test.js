@@ -283,6 +283,15 @@ test('renderHint: renders a gated hint and nothing when empty', async () => {
   assert.ok(text.includes('缓存层要换掉'));
 });
 
+test('renderHint: reported memories are marked as retold, explicit ones are not', async () => {
+  const text = renderHint([
+    { kind: 'fact', summary: '缓存层要换掉', t: Date.UTC(2026, 10, 2), confidence: 'reported' },
+    { kind: 'fact', summary: '这个是原话', t: Date.UTC(2026, 10, 2), confidence: 'explicit' },
+  ]);
+  assert.ok(text.includes('转述'));
+  assert.equal(text.split('转述').length - 1, 1);
+});
+
 test('renderHint: carries the scene when the memory stored one', async () => {
   const text = renderHint([
     {

@@ -201,6 +201,8 @@ export function candidateOf(block) {
     t: Number(block.turns[block.turns.length - 1]?.t ?? Date.now()),
     source_sid: user?.sid ?? null,
     source_seq: user?.seq ?? null,
+    // 用户只说了半句、内容主要来自助手回复时，标成转述：下一轮引用它时要留余地。
+    confidence: userText.length < 12 && botText.length >= 60 ? 'reported' : 'explicit',
     ids: block.turns.map((t) => t.id).filter((id) => typeof id === 'number'),
   };
 }
@@ -218,8 +220,8 @@ function upsertEntities(db, names, t) {
 /** @param {DatabaseSync} db */
 function insertMemory(db, item) {
   const stmt = db.prepare(
-    'INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, retention, t, source_sid, source_seq) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, retention, t, source_sid, source_seq, confidence) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
   const result = stmt.run(
     item.kind,
@@ -235,6 +237,7 @@ function insertMemory(db, item) {
     item.t,
     item.source_sid,
     item.source_seq,
+    item.confidence ?? 'explicit',
   );
   return Number(result.lastInsertRowid ?? 0);
 }

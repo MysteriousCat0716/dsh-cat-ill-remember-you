@@ -157,6 +157,26 @@ test('candidateOf: subject follows the summary source', () => {
   assert.equal(botOnly.subject, 'assistant');
 });
 
+test('candidateOf: 用户只说半句、内容主要来自助手时标 reported', () => {
+  const c = candidateOf({
+    turns: [
+      turn({ role: 'user', text: '嗯' }),
+      turn({ id: 2, role: 'assistant', text: '结论是以后别用英文解释，中文优先，这条记下来。'.repeat(5) }),
+    ],
+  });
+  assert.equal(c.confidence, 'reported');
+});
+
+test('candidateOf: 用户自己说了完整的一句时标 explicit', () => {
+  const c = candidateOf({
+    turns: [
+      turn({ role: 'user', text: '以后回答都用中文，不要默认英文。' }),
+      turn({ id: 2, role: 'assistant', text: '好。' }),
+    ],
+  });
+  assert.equal(c.confidence, 'explicit');
+});
+
 test('candidateOf: summary says what was asked and what was settled', () => {
   const c = candidateOf({
     turns: [
