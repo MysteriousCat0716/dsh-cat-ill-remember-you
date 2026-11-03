@@ -1,5 +1,12 @@
 import { insertTurn } from './db.js';
 import { evictOverflow, pushStack } from './context-stack.js';
+import { refineBlock, wantsImmediate } from './extract.js';
+
+/**
+ * 即时通道的待办：sid -> 该块 user 行的 seq。
+ * 进程重启会丢，漏掉的块留在待处理队列里，由空闲批兜底。
+ */
+const pendingImmediate = new Map();
 
 /** Fallback filter for old events that carry no `source` field. */
 export const INJECT_RE =
@@ -129,6 +136,23 @@ export function ingestEvent(db, session, event) {
     // 每一句人话入栈；超过容量时最早的一条出栈、留一份本地摘要。
     pushStack(db, { sid, seq, t });
     evictOverflow(db);
+  }
+  if (inserted > 0) {
+    // 即时通道：user 表态只做标记，等这一块的 assistant 落库再炼——那时结论
+    // 才在。炼完这一块的 turns 直接标 consumed，空闲批不会重复炼。
+    if (role === 'user' && origin === 'chat' && wantsImmediate(storedText)) {
+      pendingImmediate.set(sid, seq);
+    } else if (role === 'assistant') {
+      const userSeq = pendingImmediate.get(sid);
+      if (userSeq !== undefined) {
+        pendingImmediate.delete(sid);
+        try {
+          refineBlock(db, { sid, userSeq });
+        } catch {
+          /* 即时提炼失败不能连累 ingest；漏掉的块由空闲批兜底 */
+        }
+      }
+    }
   }
   return inserted;
 }

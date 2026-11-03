@@ -39,7 +39,9 @@ CREATE TABLE IF NOT EXISTS memories (
   verified   INTEGER,
   source_sid TEXT,
   source_seq INTEGER,
-  confidence TEXT NOT NULL DEFAULT 'explicit'
+  confidence TEXT NOT NULL DEFAULT 'explicit',
+  supersedes INTEGER,
+  rule_ver   TEXT    NOT NULL DEFAULT 'r0'
 );
 CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories (tier, last_used);
 
@@ -206,6 +208,8 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'memories', 'subject', "TEXT NOT NULL DEFAULT 'user'");
     ensureColumn(db, 'memories', 'retention', "TEXT NOT NULL DEFAULT 'auto'");
     ensureColumn(db, 'memories', 'confidence', "TEXT NOT NULL DEFAULT 'explicit'");
+    ensureColumn(db, 'memories', 'supersedes', 'INTEGER');
+    ensureColumn(db, 'memories', 'rule_ver', "TEXT NOT NULL DEFAULT 'r0'");
     ensureColumn(db, 'turns', 'scanned_at', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'turns', 'cwd', "TEXT NOT NULL DEFAULT ''");
     ensureColumn(db, 'shadow_v2', 'applied', 'INTEGER NOT NULL DEFAULT 0');

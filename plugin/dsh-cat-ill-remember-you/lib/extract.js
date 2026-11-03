@@ -8,7 +8,7 @@
 
 import { pendingTurns, markConsumed, markScanned } from './db.js';
 
-const JUDGE =
+export const JUDGE =
   /(以后|下次|记住|不要|别|必须|规则|约定|原则上|不再|改成|还是用|决定|定了|就这样|采用|选用|偏好|更喜欢|讨厌|不喜欢)/;
 
 const ANCHOR_FILE =
@@ -18,6 +18,9 @@ const ENTITY = /猫|岸|DeepSeek|dsh[\w-]*|Ollama|qwen[\w.:-]*/g;
 
 const MAX_TURNS = 40;
 const MAX_BLOCK_CHARS = 2400;
+
+/** 规则版本：换了提炼规则就升，回放集按版本对比。 */
+export const RULE_VER = 'r1';
 
 /** @param {string} text */
 function squash(text) {
@@ -203,6 +206,8 @@ export function candidateOf(block) {
     source_seq: user?.seq ?? null,
     // 用户只说了半句、内容主要来自助手回复时，标成转述：下一轮引用它时要留余地。
     confidence: userText.length < 12 && botText.length >= 60 ? 'reported' : 'explicit',
+    supersedes: null,
+    rule_ver: RULE_VER,
     ids: block.turns.map((t) => t.id).filter((id) => typeof id === 'number'),
   };
 }
@@ -220,8 +225,8 @@ function upsertEntities(db, names, t) {
 /** @param {DatabaseSync} db */
 function insertMemory(db, item) {
   const stmt = db.prepare(
-    'INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, retention, t, source_sid, source_seq, confidence) ' +
-      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, retention, t, source_sid, source_seq, confidence, supersedes, rule_ver) ' +
+      'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
   const result = stmt.run(
     item.kind,
@@ -238,6 +243,8 @@ function insertMemory(db, item) {
     item.source_sid,
     item.source_seq,
     item.confidence ?? 'explicit',
+    item.supersedes ?? null,
+    item.rule_ver ?? RULE_VER,
   );
   return Number(result.lastInsertRowid ?? 0);
 }
@@ -297,4 +304,53 @@ export function refine(db, opts = {}) {
     throw error;
   }
   return { turns: turns.length, memories };
+}
+
+/** 表态句：命中判据的 user 消息，等它的回复落库后再即时提炼。 */
+export function wantsImmediate(text) {
+  return JUDGE.test(String(text ?? ''));
+}
+
+/**
+ * 即时通道：一块完整了（user + 它的 assistant 回复都落库）立刻炼一条。
+ * 只处理它自己那一块，不碰待处理队列；炼完把这一块的 turns 标 consumed，
+ * 免得空闲批通道再炼一遍。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {{sid:string, userSeq:number}} job
+ * @returns {{memories:number, consumed:number}}
+ */
+export function refineBlock(db, { sid, userSeq }) {
+  const rows = db
+    .prepare(
+      `SELECT id, sid, seq, role, origin, text, t FROM turns
+       WHERE sid = ? AND seq >= ? ORDER BY seq`,
+    )
+    .all(sid, userSeq);
+
+  const blockTurns = [];
+  for (const row of rows) {
+    if (blockTurns.length > 0 && row.role === 'user') break;
+    blockTurns.push(row);
+  }
+  if (blockTurns.length < 2) return { memories: 0, consumed: 0 };
+
+  const candidate = candidateOf({ turns: blockTurns });
+  if (!candidate) return { memories: 0, consumed: 0 };
+
+  // insertMemory + markConsumed 必须一起提交，理由同 refine()。
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const id = insertMemory(db, candidate);
+    if (id) upsertEntities(db, candidate.entities, candidate.t);
+    markConsumed(db, candidate.ids);
+    db.exec('COMMIT');
+    return { memories: id ? 1 : 0, consumed: candidate.ids.length };
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* transaction may already be closed */
+    }
+    throw error;
+  }
 }
