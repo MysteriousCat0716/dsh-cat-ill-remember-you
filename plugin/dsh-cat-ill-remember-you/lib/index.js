@@ -132,6 +132,9 @@ export function apply(ctx) {
   // 可选注入：systemPrompt 服务出现时才注册——服务缺席时插件仍要能加载。
   // 注意 text 的 context 运行时带 agent（与内置 working-directory 同款），
   // 类型声明 AssembleContext 只列了 scope/signal，agent 是宿主合并进去的。
+  // 启动自检：inject 名单进了日志；systemPrompt 缺席时下面回调不会执行，
+  // 日志里就不会出现「context registered」——两种状态一眼可分。
+  log(`self-check: inject=[${inject.join(',')}]`);
   ctx.inject(['systemPrompt'], (scope) => {
     scope.systemPrompt.context({
       name: 'memory-core',
@@ -143,6 +146,7 @@ export function apply(ctx) {
         return hintBySid.get(agent.id) ?? hintBySid.get(agent.session?.id) ?? '';
       },
     });
+    log('self-check: memory context registered');
   });
   startTimer();
 
