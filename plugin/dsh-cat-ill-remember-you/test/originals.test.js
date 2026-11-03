@@ -206,3 +206,14 @@ test('spill: 文件不在了就退回预览，不抛错', () => {
   assert.equal(result.text, preview);
   assert.equal(result.spill, missing);
 });
+
+test('spillPathOf: 认新格式（开括号 + .txt），不认 <path> 占位', () => {
+  const real =
+    '(1234 bytes omitted. Full formatted result stored at: C:\\Users\\x\\AppData\\Local\\Temp\\dsh-spill-abc\\session-deadbeef\\1-ops_bash.txt. Use read with offset/limit, or grep this path.)';
+  assert.equal(
+    spillPathOf(real),
+    'C:\\Users\\x\\AppData\\Local\\Temp\\dsh-spill-abc\\session-deadbeef\\1-ops_bash.txt',
+  );
+  assert.equal(spillPathOf('(9 bytes omitted. Full formatted result stored at: <path>. Use read.)'), '');
+  assert.equal(spillPathOf('nothing here'), '');
+});

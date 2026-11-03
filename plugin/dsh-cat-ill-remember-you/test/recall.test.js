@@ -500,3 +500,31 @@ test('weakTerms: 按词切，不再把「之前先」这种跨词窗口当证据
   assert.ok(terms.includes('缓存'));
   assert.ok(!terms.includes('之前先'));
 });
+
+test('markRecallUsed: 滑出最近 40 条的旧记录结算为 0，不再永远 NULL', async () => {
+  const db = openStore(':memory:');
+  const memory = db
+    .prepare(
+      `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+       VALUES ('decision', '缓存层要换掉。', '缓存层要换掉', '[]', '["缓存"]', '规则提炼：decision', 'active', 1)`,
+    )
+    .run();
+  const log = db.prepare(
+    `INSERT INTO recall_log (sid, turn, memory_id, why, used, t) VALUES (?, 0, ?, '锚点', NULL, ?)`,
+  );
+  // 45 条待判记录：最近 40 条该留着 NULL，最早 5 条该被结算成 0。
+  for (let i = 0; i < 45; i += 1) log.run('s1', memory.lastInsertRowid, 1000 + i);
+  const other = db
+    .prepare(
+      `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+       VALUES ('decision', '别的条目。', '别的条目', '[]', '["别的"]', '规则提炼：decision', 'active', 2)`,
+    )
+    .run();
+  log.run('s1', other.lastInsertRowid, 2000);
+  markRecallUsed(db, { sid: 's1', text: '这轮没提任何锚点' });
+  const settled = db.prepare('SELECT COUNT(*) AS n FROM recall_log WHERE sid = ? AND used = 0').get('s1').n;
+  const pending = db.prepare('SELECT COUNT(*) AS n FROM recall_log WHERE sid = ? AND used IS NULL').get('s1').n;
+  assert.equal(settled, 6);
+  assert.equal(pending, 40);
+  db.close();
+});

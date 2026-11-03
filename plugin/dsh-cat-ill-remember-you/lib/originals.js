@@ -103,11 +103,11 @@ export function refPointerOf(text) {
 
 /**
  * spill 路径：工具结果超过 token 阈值时，DSH 把全文写到
- * `%TEMP%/dsh-spill-XXXXXX/session-<hash>/<rand>-<tool>`，正文只留预览和一行
- * `Full formatted result stored at: <path>. Use read with offset/limit, ...`。
- * 这是插件侧唯一能拿到的「全文」，比 refId 有用——refId 指向进程内存，重启就空。
+ * `%TEMP%/dsh-spill-XXXXXX/session-<hash>/<rand>-<tool>.txt`，正文只留预览和一行
+ * `(N bytes omitted. Full formatted result stored at: <path>. Use read with offset/limit, ...)`。
+ * 开括号是 `(` 不是 `[`；路径以 `.txt` 结尾；日志里有时脱敏成 `<path>`，匹配不到就返回空串。
  */
-const SPILL_PATH = /Full formatted result stored at: (.+?)\. (?:Use read|$)/;
+const SPILL_PATH = /Full formatted result stored at:\s*(\S+?\.txt)/;
 
 export function spillPathOf(text) {
   const value = String(text ?? '');

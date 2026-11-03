@@ -710,7 +710,19 @@ export async function retrieve(
  * @returns {number} 被标记的行数
  */
 export function markRecallUsed(db, { sid, text }) {
-  if (!sid || !text) return 0;
+  if (!sid) return 0;
+  // 先结算滑出判定窗口的旧记录：最近 40 条 NULL 之外的，一律判「没用上」。
+  // 不结算的话，40 轮前滑出窗口的行会永远 NULL，「used=1 / 总注入」的分母失真。
+  db.prepare(
+    `UPDATE recall_log SET used = 0
+     WHERE sid = ? AND used IS NULL AND memory_id IS NOT NULL
+       AND id NOT IN (
+         SELECT id FROM recall_log
+         WHERE sid = ? AND used IS NULL AND memory_id IS NOT NULL
+         ORDER BY id DESC LIMIT 40
+       )`,
+  ).run(String(sid), String(sid));
+  if (!text) return 0;
   const terms = new Set([...anchorsOf(text), ...entitiesOf(text)]);
   if (terms.size === 0) return 0;
   const rows = db
