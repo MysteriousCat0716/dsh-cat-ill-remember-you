@@ -191,11 +191,43 @@ function condense(entry) {
 }
 
 /**
+ * 区间里的工具结果：替换文本只写对话，但工具原文被压掉后模型就完全不知道
+ * 这段发生过什么。这里给一行索引——带上 seq，宿主侧还能按 seq 取回原文。
+ */
+function toolNote(session, seqs) {
+  const list = Array.isArray(seqs) ? seqs : [];
+  const names = new Map();
+  const results = [];
+  for (const seq of list) {
+    const event = typeof session?.eventAt === 'function' ? session.eventAt(seq) : undefined;
+    if (!event) continue;
+    if (event.type === 'tool/call') {
+      for (const call of event.data?.calls ?? []) {
+        if (call?.callId && call?.name) names.set(String(call.callId), String(call.name));
+      }
+    } else if (event.type === 'tool/result') {
+      const callId = event.data?.message?.source?.callId;
+      results.push({ seq, name: names.get(String(callId)) ?? '' });
+    }
+  }
+  if (results.length === 0) return '';
+  const head = results.slice(0, 4).map((item) => `${item.name || '工具'}@${item.seq}`).join('、');
+  const more = results.length > 4 ? ` 等 ${results.length} 个` : '';
+  return `［工具结果 ${results.length} 个：${head}${more}；原文按 seq 取回］`;
+}
+
+/** surface 上 seq 落在区间内的节点（含工具节点）。 */
+function nodesBetween(session, from, to) {
+  const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes : [];
+  return nodes.filter((seq) => Number(seq) >= Number(from) && Number(seq) <= Number(to));
+}
+
+/**
  * 把被换窗口压成一段替换文本，硬上界 maxChars。
  * @param {Array} replaced
  * @param {{maxChars?:number}} [options]
  */
-export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS } = {}) {
+export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note = '' } = {}) {
   const list = Array.isArray(replaced) ? replaced : [];
   if (list.length === 0) return '';
   const first = list[0]?.seq ?? 0;
@@ -207,7 +239,8 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS } = {
   const header =
     `[上下文替换｜旧消息压缩，非用户发言] 更早 ${list.length} 条（seq ${first}-${last}），原文在本地：\n` +
     (keywords.length > 0 ? `关键词：${keywords.join('、')}\n` : '') +
-    (promises.length > 0 ? `约定：${promises.join('；')}\n` : '');
+    (promises.length > 0 ? `约定：${promises.join('；')}\n` : '') +
+    (note ? `${note}\n` : '');
   const limit = Math.max(80, maxChars - header.length - 10);
   const picked = [];
   let size = 0;
@@ -586,7 +619,9 @@ export function planShadowV2(
   // 上一次 apply 失败（applied=0）时允许重试，否则一次微任务失败会让
   // 这段永远停在原文。full 分支在上面已经判过，这里主要挡 roll/兜底。
   if (sameRangeApplied(db, sid, rangeStart, rangeEnd)) return null;
-  const text = renderReplacement(replaced);
+  const text = renderReplacement(replaced, {
+    note: toolNote(session, covered ?? nodesBetween(session, rangeStart, rangeEnd)),
+  });
   const charsBefore = replaced.reduce((total, entry) => total + entry.text.length, 0);
   const assessment = assessReplacement({ replaced, kept, text, charsBefore });
   // 冷却：刚换过就先不换，也不记账——窗口没动，再记一行没有新信息。

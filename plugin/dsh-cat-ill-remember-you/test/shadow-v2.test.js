@@ -680,3 +680,45 @@ test('assessReplacement: 替换文本比原文长时 lost_ratio 为负，不算�
   const a = assessReplacement({ replaced, kept: [], text: '很长很长的替换文本' });
   assert.ok(a.lostRatio < 0);
 });
+
+test('planShadowV2: full 模式压掉工具结果时，替换文本留一行索引', () => {
+  const entries = [
+    [1, 'user', '先看这个文件'],
+    [2, 'assistant', '我去读'],
+    [5, 'user', '继续'],
+    [6, 'assistant', '好'],
+  ];
+  const tools = [
+    { type: 'tool/call', seq: 3, data: { calls: [{ callId: 'c1', name: 'read' }] } },
+    {
+      type: 'tool/result',
+      seq: 4,
+      data: {
+        message: { source: { callId: 'c1' }, content: [{ type: 'text', text: '很长的工具输出'.repeat(50) }] },
+      },
+    },
+  ];
+  const events = new Map();
+  for (const [seq, role, text] of entries) events.set(seq, { seq, role, text });
+  for (const tool of tools) events.set(tool.seq, tool);
+  const session = {
+    id: 'sid-tool',
+    surface: { nodes: [0, 1, 2, 3, 4, 5, 6] },
+    eventAt: (seq) => events.get(seq),
+    deriveEventMessage: (event) =>
+      event && (event.role === 'user' || event.role === 'assistant')
+        ? { role: event.role, content: [{ type: 'text', text: event.text }] }
+        : undefined,
+    append: () => ({ seq: 999 }),
+  };
+  const cleanup = useWhitelist(['sid-tool:full']);
+  const db = openStore(':memory:');
+  try {
+    const plan = planShadowV2(session, db, { now: 1 });
+    assert.ok(plan, 'full 模式应产出替换计划');
+    assert.match(plan.text, /工具结果 1 个：read@4/);
+  } finally {
+    cleanup();
+    db.close();
+  }
+});
