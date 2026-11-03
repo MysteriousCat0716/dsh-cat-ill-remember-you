@@ -85,21 +85,49 @@ const WEAK_STOP = new Set([
 // 3 字窗口几乎必含疑问词/虚词；WEAK_STOP 里是整词，对窗口永远不命中，
 // 所以这里按「夹带」判断——「怎么做」「是什么」这类窗口整条丢掉。
 const WEAK_NOISE = /[什么怎么哪吗呢吧啊呀了的么这那个]/;
+const SEGMENTER = new Intl.Segmenter('zh', { granularity: 'word' });
 
-function weakTerms(text) {
+export function weakTerms(text) {
   const s = String(text ?? '');
+  if (!s) return [];
   const out = new Set();
   for (const match of s.matchAll(/[A-Za-z][A-Za-z0-9_.-]{3,}/g)) out.add(match[0]);
-  for (const run of s.match(/[\u4e00-\u9fa5]{3,}/g) ?? []) {
-    for (let i = 0; i + 3 <= run.length; i += 1) {
-      const term = run.slice(i, i + 3);
-      if (WEAK_STOP.has(term) || WEAK_NOISE.test(term)) continue;
-      out.add(term);
+
+  // 先按 ICU 里的中文词表切——「车站」不会再拆成「车」和「站」两个单字。
+  // 词典里的技术词（缓存、破甲）会被切成单字，所以连续单字再两两拼回来。
+  const words = [];
+  let singles = '';
+  const flush = () => {
+    for (let i = 0; i + 2 <= singles.length; i += 1) words.push(singles.slice(i, i + 2));
+    singles = '';
+  };
+  try {
+    for (const part of SEGMENTER.segment(s)) {
+      if (!part.isWordLike) {
+        flush();
+        continue;
+      }
+      const term = part.segment;
+      if (term.length === 1 && /^[\u4e00-\u9fa5]$/.test(term)) {
+        singles += term;
+        continue;
+      }
+      flush();
+      if (term.length >= 2 && (/^[\u4e00-\u9fa5]+$/.test(term) || /[A-Za-z]/.test(term))) {
+        words.push(term);
+      }
     }
+  } catch {
+    // 老 Node 没有 Intl.Segmenter：这一层就不出词，宁缺毋滥。
+  }
+  flush();
+
+  for (const term of words) {
+    if (WEAK_STOP.has(term) || WEAK_NOISE.test(term)) continue;
+    out.add(term);
   }
   return [...out].slice(0, 8);
 }
-
 
 /** Count non-overlapping occurrences of a literal term. */
 function countOccurrences(text, term) {

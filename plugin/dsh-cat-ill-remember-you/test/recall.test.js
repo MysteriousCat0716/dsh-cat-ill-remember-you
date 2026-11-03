@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openStore, insertTurn } from '../lib/db.js';
-import { queryOf, knownOf, retrieve, renderHint, markRecallUsed } from '../lib/recall.js';
+import { queryOf, knownOf, retrieve, renderHint, markRecallUsed, weakTerms } from '../lib/recall.js';
 
 // 单元测试不依赖本机 Ollama：向量路径关闭，纯函数在 embed.test.js 里测。
 process.env.DSH_MEMORY_CORE_VECTOR = 'off';
@@ -493,4 +493,10 @@ test('retrieve: permanent 的记忆不被更近的条目挤掉', async () => {
   const hits = await retrieve(db, { text: 'lib/recall.js 现在怎么改', recent: [], now: 3000 });
   assert.equal(hits[0].summary, '钉子条目（旧）');
   db.close();
+});
+
+test('weakTerms: 按词切，不再把「之前先」这种跨词窗口当证据', async () => {
+  const terms = weakTerms('你之前先改缓存，再跑测试');
+  assert.ok(terms.includes('缓存'));
+  assert.ok(!terms.includes('之前先'));
 });
