@@ -208,8 +208,15 @@ export function apply(ctx) {
       // 藏进 carry 的 try 里会变成 ReferenceError 再被外层 catch 吞掉。
       const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sid) : undefined;
       const cwd = session?.header?.cwd;
+      const carryCovered = [];
       try {
-        const carry = planCarry(db, { cwd, sid, session, messages: decision.messages });
+        const carry = planCarry(db, {
+          cwd,
+          sid,
+          session,
+          messages: decision.messages,
+          covered: carryCovered,
+        });
         if (carry) {
           hintParts.push(carry);
           log(`carry chars=${carry.length} cwd=${cwd}`);
@@ -222,7 +229,9 @@ export function apply(ctx) {
       // 只对白名单会话生效，别把测试用的上下文塞进普通会话。
       try {
         if (replaceMode(sid) !== 'off') {
-          const stacked = renderStack(db);
+          const stacked = renderStack(db, {
+            exclude: new Set(carryCovered.map((item) => `${item.sid}:${item.seq}`)),
+          });
           if (stacked) {
             hintParts.push(stacked);
             log(`stack chars=${stacked.length}`);

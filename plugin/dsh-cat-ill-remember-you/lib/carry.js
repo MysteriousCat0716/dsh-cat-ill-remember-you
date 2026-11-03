@@ -309,7 +309,7 @@ export function renderMultiCarry(tails, maxChars = LAST_SESSION_MAX_CHARS) {
  */
 export function planCarry(
   db,
-  { cwd, sid, session, messages = [], maxChars = LAST_SESSION_MAX_CHARS, sessionsRoot } = {},
+  { cwd, sid, session, messages = [], maxChars = LAST_SESSION_MAX_CHARS, sessionsRoot, covered } = {},
 ) {
   // 同一轮重放时兜底：本轮消息里已经有标记。
   if (hasCarry(messages)) return null;
@@ -328,6 +328,13 @@ export function planCarry(
   if (tails.length > 0) {
     for (const tail of tails) {
       const lastSeq = Number(tail.messages[tail.messages.length - 1]?.seq) || 0;
+      // 记下 carry 真正会渲染的那几条（renderMultiCarry 取每个会话最后 6 条），
+      // 让调用方把它从别的跨会话视图里剔掉，别把同一段话给两遍。
+      if (Array.isArray(covered)) {
+        for (const message of tail.messages.slice(-6)) {
+          if (message?.seq != null) covered.push({ sid: tail.sid, seq: message.seq });
+        }
+      }
       rememberCarry(db, sid, tail.sid, lastSeq, tail.mtime);
     }
     return renderMultiCarry(tails, maxChars);

@@ -37,3 +37,14 @@ test('renderStack: 最近几条用原文，更早的用缓存摘要', () => {
   assert.doesNotMatch(text, /很久以前那句原文/);
   db.close();
 });
+
+test('renderStack: carry 已经给过的行不再重复进栈', () => {
+  const db = openStore(':memory:');
+  insertTurn(db, { sid: 's-a', seq: 1, role: 'user', text: 'carry 已经给过的一句', t: 1000 });
+  insertTurn(db, { sid: 's-b', seq: 1, role: 'user', text: '只有栈里有的一句', t: 2000 });
+  const text = renderStack(db, { limit: 10, raw: 10, exclude: new Set(['s-a:1']) });
+  assert.doesNotMatch(text, /carry 已经给过的一句/);
+  assert.match(text, /只有栈里有的一句/);
+  assert.match(text, /最近 1 条/);
+  db.close();
+});

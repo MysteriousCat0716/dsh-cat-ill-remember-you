@@ -59,9 +59,14 @@ export function cachedSummary(db, sid, seq) {
  */
 export function renderStack(
   db,
-  { limit = STACK_LIMIT, raw = STACK_RAW, rawChars = 220, oldChars = 140 } = {},
+  { limit = STACK_LIMIT, raw = STACK_RAW, rawChars = 220, oldChars = 140, exclude } = {},
 ) {
-  const rows = readStack(db, { limit });
+  const skip = exclude instanceof Set ? exclude : new Set(Array.isArray(exclude) ? exclude : []);
+  // carry 已经渲染过的行不再进栈：两处同时给同一段话，白花字数也重复。
+  // 多取一些再过滤，保证过滤后仍能凑满 limit 条。
+  const rows = readStack(db, { limit: limit + Math.min(20, skip.size) })
+    .filter((row) => !skip.has(`${row.sid}:${row.seq}`))
+    .slice(0, limit);
   if (rows.length === 0) return '';
   const lines = rows.map((row, index) => {
     const newest = index < raw;
