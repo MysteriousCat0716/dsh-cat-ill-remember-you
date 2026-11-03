@@ -7,7 +7,6 @@ import { zstdCompressSync } from 'node:zlib';
 
 import { openStore } from '../lib/db.js';
 import { recordShadowV2 } from '../lib/shadow-v2.js';
-import { LAST_SESSION_MARK, planCarry, renderTailCarry } from '../lib/carry.js';
 import {
   originalMessages,
   recentSessionOriginals,
@@ -132,55 +131,3 @@ test('recentSessionOriginals 只跳过 origin=subagent，fork 会话照接', () 
   }
 });
 
-test('renderTailCarry 保留最近的条目并带标记', () => {
-  const text = renderTailCarry(
-    {
-      sid: 's1',
-      mtime: 1000,
-      messages: [
-        { role: 'user', text: '第一句' },
-        { role: 'assistant', text: '第二句' },
-        { role: 'user', text: '第三句' },
-      ],
-    },
-    400,
-  );
-  assert.ok(text.startsWith(LAST_SESSION_MARK));
-  assert.ok(text.includes('第三句'));
-  assert.ok(text.indexOf('第二句') < text.indexOf('第三句'));
-});
-
-test('planCarry 优先用上一个会话的原文，原文读不到才退回摘要', () => {
-  const root = tempRoot();
-  const db = openStore(':memory:');
-  try {
-    const cwd = 'C:\\w';
-    writeSession(root, 'prev', cwd, [userEvent(1, '上一句原文'), assistantEvent(2, '上一句回复')]);
-    recordShadowV2(db, {
-      sid: 'prev',
-      turn: 0,
-      t: 1000,
-      rangeStart: 1,
-      rangeEnd: 2,
-      seqs: '[1,2]',
-      text: '缓存摘要正文',
-      charsBefore: 100,
-      charsAfter: 10,
-      kept: 4,
-      lostRatio: 0.1,
-      dangling: 0,
-      applied: true,
-      cwd,
-    });
-    const session = { header: { cwd }, surface: { nodes: [0] }, eventAt: () => undefined, deriveEventMessage: () => undefined };
-    const withOriginals = planCarry(db, { cwd, sid: 'new', session, sessionsRoot: root });
-    assert.ok(withOriginals.includes('上一句原文'));
-    assert.ok(!withOriginals.includes('缓存摘要正文'));
-    // 换一个读不到原文的 workspace：退回摘要（摘要的 cwd 要同 workspace 才有）
-    const fallback = planCarry(db, { cwd: 'C:\\w2', sid: 'new', session: { ...session, header: { cwd: 'C:\\w2' } } });
-    assert.equal(fallback, null);
-  } finally {
-    db.close();
-    rmSync(root, { recursive: true, force: true });
-  }
-});

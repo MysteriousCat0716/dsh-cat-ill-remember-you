@@ -7,8 +7,7 @@ import { refine } from './extract.js';
 import { ingestEvent, textOf } from './ingest.js';
 import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
-import { planShadowV2, replaceMode } from './shadow-v2.js';
-import { planCarry, setCarryLogger } from './carry.js';
+import { planShadowV2 } from './shadow-v2.js';
 import { renderStack } from './context-stack.js';
 import { setOriginalsLogger } from './originals.js';
 import { backfillTurnCwd } from './backfill.js';
@@ -64,9 +63,6 @@ function log(line) {
  * Every hook is contained: a broken store must never take the host down.
  */
 export function apply(ctx) {
-  // 接续模块自己吞错误，但失败原因要能进日志——不然「没有别的会话」
-  // 和「库读不出来」在日志里长得一样。
-  setCarryLogger(log);
   // 原文读取的 warn 默认是空函数；不接上，跳过大文件/解压失败在生产里全是静默的。
   setOriginalsLogger(log);
   let store;
@@ -198,44 +194,18 @@ export function apply(ctx) {
       // 只用于记账：pre-step 的 turn 是进程内轮次，不参与「是不是新会话」的判断。
       const turnNo = Number(turn) > 0 ? Number(turn) : 0;
 
-      // M5：会话第一轮接上同一个 workspace 里上一个会话的最后缓存。
-      // 只认真替换过的行（applied=1），那是模型实际读过的接续文本；
-      // cwd 为空的历史行不参与——宁可接不上也不串项目。
-      // 是不是「第一轮」由 carry.js 看会话历史（surface 里有没有 assistant），
-      // 不看 pre-step 的 messages——那只是本轮 claim 到的消息，也不看 turn，
-      // 那是进程内轮次（旧会话恢复后也从 1 开始）。
-      // 取会话和 cwd 放在内层 try 外面：retrieve 的 L3 也要用它，
-      // 藏进 carry 的 try 里会变成 ReferenceError 再被外层 catch 吞掉。
+      // 取会话和 cwd：retrieve 的 L3 要用它，放在内层 try 外面，
+      // 藏进 try 里会变成 ReferenceError 再被外层 catch 吞掉。
       const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sid) : undefined;
       const cwd = session?.header?.cwd;
-      const carryCovered = [];
-      try {
-        const carry = planCarry(db, {
-          cwd,
-          sid,
-          session,
-          messages: decision.messages,
-          covered: carryCovered,
-        });
-        if (carry) {
-          hintParts.push(carry);
-          log(`carry chars=${carry.length} cwd=${cwd}`);
-        }
-      } catch (error) {
-        log(`carry failed: ${error?.message ?? error}`);
-      }
 
-      // 全局栈：跨会话按时间取最近几条，作为替换上下文（指针在栈里，正文现查）。
-      // 只对白名单会话生效，别把测试用的上下文塞进普通会话。
+      // 全局栈：跨会话按时间取最近几条，作为接续上下文（指针在栈里，正文现查）。
+      // 取代原来的 carry——普通会话也接，不只白名单。
       try {
-        if (replaceMode(sid) !== 'off') {
-          const stacked = renderStack(db, {
-            exclude: new Set(carryCovered.map((item) => `${item.sid}:${item.seq}`)),
-          });
-          if (stacked) {
-            hintParts.push(stacked);
-            log(`stack chars=${stacked.length}`);
-          }
+        const stacked = renderStack(db);
+        if (stacked) {
+          hintParts.push(stacked);
+          log(`stack chars=${stacked.length}`);
         }
       } catch (error) {
         log(`stack failed: ${error?.message ?? error}`);

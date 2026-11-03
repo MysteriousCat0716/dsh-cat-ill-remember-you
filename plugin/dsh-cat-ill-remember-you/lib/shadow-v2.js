@@ -118,7 +118,7 @@ export function surfaceMessages(session) {
       const kind = message?.source?.kind;
       if (typeof kind === 'string' && kind !== 'user') continue;
       // 我们自己写进历史的替换文本不能再被当成「他说」。
-      if (text.startsWith('[上下文替换]')) continue;
+      if (text.startsWith('[上下文替换')) continue;
       if (!message?.source && INJECT_RE.test(text)) continue;
     }
     out.push({ seq, role, message, text });
@@ -168,7 +168,7 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS } = {
   // 约定句原样留：关键词救不了「以后不要怎样」，句子才行。
   const promises = promiseLines(list, { max: 4, chars: 36 });
   const header =
-    `[上下文替换] 更早 ${list.length} 条（seq ${first}-${last}），原文在本地：\n` +
+    `[上下文替换｜旧消息压缩，非用户发言] 更早 ${list.length} 条（seq ${first}-${last}），原文在本地：\n` +
     (keywords.length > 0 ? `关键词：${keywords.join('、')}\n` : '') +
     (promises.length > 0 ? `约定：${promises.join('；')}\n` : '');
   const limit = Math.max(80, maxChars - header.length - 10);
@@ -179,7 +179,7 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS } = {
     const entry = list[index];
     const text = condense(entry);
     if (!text) continue;
-    const prefix = entry.role === 'user' ? '他说' : '我说';
+    const prefix = entry.role === 'user' ? '用户' : '助手';
     const line = `- ${prefix}: ${text}`;
     if (size + line.length + 1 > limit) continue;
     picked.push(line);
@@ -188,7 +188,7 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS } = {
   if (picked.length === 0) {
     const entry = [...list].reverse().find((item) => condense(item));
     if (!entry) return header;
-    const prefix = entry.role === 'user' ? '他说' : '我说';
+    const prefix = entry.role === 'user' ? '用户' : '助手';
     picked.push(`- ${prefix}: ${condense(entry).slice(0, Math.max(20, limit - 10))}`);
   }
   picked.reverse();

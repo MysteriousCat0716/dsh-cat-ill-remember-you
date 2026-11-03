@@ -128,8 +128,8 @@ test('renderReplacement: 有头、有正文、不超过 600 字', () => {
   }));
   const text = renderReplacement(entries);
   assert.ok(text.length <= MAX_REPLACE_CHARS);
-  assert.ok(text.startsWith('[上下文替换]'));
-  assert.ok(text.includes('他说'));
+  assert.ok(text.startsWith('[上下文替换｜'));
+  assert.ok(text.includes('用户:'));
 });
 
 test('assessReplacement: 锚点没进替换文本 → lostRatio 高、dangling 记一条', () => {

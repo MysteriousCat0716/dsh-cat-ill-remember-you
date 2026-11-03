@@ -5,9 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { openStore } from '../lib/db.js';
-import { recordShadowV2 } from '../lib/shadow-v2.js';
 import { apply } from '../lib/index.js';
-import { LAST_SESSION_MARK } from '../lib/carry.js';
+import { STACK_MARK } from '../lib/context-stack.js';
 
 /** 假会话：surface.nodes 是 seq 数组，eventAt/deriveEventMessage 按 seq 取回。 */
 function fakeSession(entries, cwd) {
@@ -69,27 +68,17 @@ function fakeCtx(cwd, history = []) {
   };
 }
 
-/** 准备一个带旧会话缓存的临时库，然后按真实接线跑一次 pre-step。 */
+/** 准备一个带别的会话原文的临时库，然后按真实接线跑一次 pre-step。 */
 async function runPreStep({ turn, messages, cwd = '/proj', memory = null, history = [] }) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'carry-pre-step-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stack-pre-step-'));
   const file = path.join(dir, 'memory.db');
   const seed = openStore(file);
-  recordShadowV2(seed, {
-    sid: 'old-session',
-    turn: 0,
-    t: Date.now() - 60_000,
-    rangeStart: 1,
-    rangeEnd: 4,
-    seqs: '[1,2,3,4]',
-    text: '上次停在：把 carry.js 接进 pre-step',
-    charsBefore: 300,
-    charsAfter: 40,
-    kept: 4,
-    lostRatio: 0.1,
-    dangling: 0,
-    applied: true,
-    cwd,
-  });
+  // 全局栈读的是 turns 表，种一条别的会话的原文，验证它会进注入块。
+  seed
+    .prepare(
+      `INSERT INTO turns (sid, seq, role, origin, cwd, text, t) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run('old-session', 1, 'user', 'chat', cwd, '上次停在：把 stack 接进 pre-step', Date.now() - 60_000);
   if (memory) {
     seed
       .prepare(
@@ -141,19 +130,19 @@ async function runPreStep({ turn, messages, cwd = '/proj', memory = null, histor
 
 const userMessage = (text) => ({ role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } });
 
-test('pre-step: 第一轮注入上一个会话的最后缓存', async () => {
+test('pre-step: 注入全局栈（别的会话最近几句话）', async () => {
   const { decision: result, hintText } = await runPreStep({
     turn: 1,
     messages: [userMessage('我回来了')],
   });
-  assert.ok(hintText.startsWith(LAST_SESSION_MARK));
-  assert.ok(hintText.includes('把 carry.js 接进 pre-step'));
+  assert.ok(hintText.includes(STACK_MARK));
+  assert.ok(hintText.includes('把 stack 接进 pre-step'));
   // 记忆块走 runtime context provider，不再混进 decision.messages——那是用户消息。
   assert.equal(result.messages.filter((message) => message.source?.kind === 'user').length, 1);
   assert.equal(result.messages.filter((message) => message.source?.kind === 'memory-core').length, 0);
 });
 
-test('pre-step: 聊过的会话也会接上（每轮接续，不再只看第一轮）', async () => {
+test('pre-step: 普通会话也接栈（不再只是白名单）', async () => {
   const { hintText } = await runPreStep({
     turn: 1,
     messages: [userMessage('继续')],
@@ -163,29 +152,20 @@ test('pre-step: 聊过的会话也会接上（每轮接续，不再只看第一�
       [3, 'user', '继续'],
     ],
   });
-  assert.ok(hintText.startsWith(LAST_SESSION_MARK));
-});
-
-test('pre-step: 历史里有旧标记时，新的接续仍然注入（去重靠 carry_log）', async () => {
-  const { hintText } = await runPreStep({
-    turn: 1,
-    messages: [userMessage('我回来了')],
-    history: [[1, 'user', `${LAST_SESSION_MARK} 上一轮已注入`, { kind: 'memory-core' }]],
-  });
-  assert.ok(hintText.startsWith(LAST_SESSION_MARK));
+  assert.ok(hintText.includes(STACK_MARK));
 });
 
 test('pre-step: 有取回命中时 recall_log 落账（不因 turnNo 漏定义而静默失败）', async () => {
   const { hintText, recallCount } = await runPreStep({
     turn: 1,
-    messages: [userMessage('继续改 lib/carry.js 的判据')],
+    messages: [userMessage('继续改 lib/context-stack.js 的判据')],
     memory: {
-      text: 'carry.js 的新会话判据是会话历史里有没有 assistant 回复',
-      summary: 'carry.js 判据：看会话历史',
-      anchors: ['lib/carry.js'],
+      text: 'context-stack.js 的栈只放指针，正文现查',
+      summary: 'stack 判据：栈存指针、正文现查',
+      anchors: ['lib/context-stack.js'],
     },
   });
   assert.ok(recallCount > 0, 'recall_log 应写入命中记录');
-  assert.ok(hintText.startsWith(LAST_SESSION_MARK), '接续与取回合并成一条 runtime context');
-  assert.ok(hintText.includes('carry.js 判据：看会话历史'));
+  assert.ok(hintText.includes(STACK_MARK), '栈与取回合并成一条 runtime context');
+  assert.ok(hintText.includes('stack 判据：栈存指针、正文现查'));
 });

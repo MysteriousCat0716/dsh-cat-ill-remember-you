@@ -1,3 +1,6 @@
+/** 注入块头部标记；测试和日志靠它认「这一段是全局栈」。 */
+export const STACK_MARK = '[全局上下文]';
+
 /** 栈容量：跨会话按时间保留最近这么多条指针。 */
 export const STACK_LIMIT = 10;
 
@@ -62,7 +65,7 @@ export function renderStack(
   { limit = STACK_LIMIT, raw = STACK_RAW, rawChars = 220, oldChars = 140, exclude } = {},
 ) {
   const skip = exclude instanceof Set ? exclude : new Set(Array.isArray(exclude) ? exclude : []);
-  // carry 已经渲染过的行不再进栈：两处同时给同一段话，白花字数也重复。
+  // exclude 里的行不再进栈：别的跨会话视图已经给过，白花字数也重复。
   // 多取一些再过滤，保证过滤后仍能凑满 limit 条。
   const rows = readStack(db, { limit: limit + Math.min(20, skip.size) })
     .filter((row) => !skip.has(`${row.sid}:${row.seq}`))
@@ -70,7 +73,7 @@ export function renderStack(
   if (rows.length === 0) return '';
   const lines = rows.map((row, index) => {
     const newest = index < raw;
-    const who = row.role === 'user' ? '他说' : '我说';
+    const who = row.role === 'user' ? '用户' : '助手';
     let text;
     if (newest) {
       text = clip(row.text, rawChars);
@@ -81,6 +84,6 @@ export function renderStack(
     const tag = newest ? '' : '（旧·摘要）';
     return `- ${clock(row.t)} ${String(row.sid).slice(-6)} ${who}${tag}：${text}`;
   });
-  const head = `[全局上下文] 最近 ${rows.length} 条（跨会话，按时间；最近 ${Math.min(raw, rows.length)} 条原文）`;
+  const head = `${STACK_MARK} 最近 ${rows.length} 条（跨会话，按时间；最近 ${Math.min(raw, rows.length)} 条原文）`;
   return `${head}\n${lines.join('\n')}`;
 }

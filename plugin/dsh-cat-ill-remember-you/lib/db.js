@@ -117,17 +117,6 @@ CREATE TABLE IF NOT EXISTS shadow_v2 (
   applied      INTEGER NOT NULL DEFAULT 0,
   cwd          TEXT    NOT NULL DEFAULT ''
 );
-
--- 跨会话接续的去重账：每个会话记得「上次接过谁、接到哪个 seq / 哪个时刻」。
--- from_t 防「seq 没变但内容变了」（宿主压缩后 turns 不更新）时被误判成已接过。
-CREATE TABLE IF NOT EXISTS carry_log (
-  sid      TEXT    NOT NULL,
-  from_sid TEXT    NOT NULL,
-  from_seq INTEGER NOT NULL,
-  from_t   INTEGER NOT NULL DEFAULT 0,
-  t        INTEGER NOT NULL,
-  PRIMARY KEY (sid, from_sid)
-);
 `;
 
 /**
@@ -188,7 +177,6 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'turns', 'cwd', "TEXT NOT NULL DEFAULT ''");
     ensureColumn(db, 'shadow_v2', 'applied', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'shadow_v2', 'cwd', "TEXT NOT NULL DEFAULT ''");
-    ensureColumn(db, 'carry_log', 'from_t', 'INTEGER NOT NULL DEFAULT 0');
     return db;
   } catch (error) {
     try {
@@ -205,8 +193,8 @@ export function openStore(file = DEFAULT_DB_FILE) {
  * `origin`: 'chat' for the owner typing in the desktop/web chat, 'im' for a
  * connected IM channel (QQ/Feishu/...), 'unknown' when the source carries no
  * channel hint.
- * `cwd`: the workspace the session belongs to. Carry 只接同一个 workspace 的
- * 会话尾巴；空值表示「归属未知」，不参与跨会话接续（宁可接不上也不串项目）。
+ * `cwd`: the workspace the session belongs to. 空值表示「归属未知」，
+ * 不参与按 workspace 的原文回看（宁可接不上也不串项目）。
  * @returns {number} rows inserted (0 or 1)
  */
 export function insertTurn(db, { sid, seq, role, text, origin = 'chat', cwd = '', t = Date.now() }) {
