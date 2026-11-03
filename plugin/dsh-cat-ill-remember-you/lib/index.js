@@ -336,6 +336,10 @@ export function apply(ctx) {
           const text = renderHint(hits);
           log(`recall hits=${hits.length} chars=${text.length}`);
           for (const hit of hits) {
+            // 常驻条目每轮由 personaOf 重新挑，不靠「这一轮用没用上」判断；
+            // 入账会挤占 40 条判定窗口（满编时只剩四五轮），地平线一短，
+            // 隔几轮才被用到的记忆会被误结算成「没用上」。
+            if (hit.section === 'persona') continue;
             try {
               db.prepare(
                 'INSERT INTO recall_log (sid, turn, t, memory_id, why) VALUES (?, ?, ?, ?, ?)',

@@ -107,12 +107,13 @@ export function refPointerOf(text) {
  * `(N bytes omitted. Full formatted result stored at: <path>. Use read with offset/limit, ...)`。
  * 开括号是 `(` 不是 `[`；路径以 `.txt` 结尾；日志里有时脱敏成 `<path>`，匹配不到就返回空串。
  */
-const SPILL_PATH = /Full formatted result stored at:\s*(\S+?\.txt)/;
+const SPILL_PATH = /Full formatted result stored at:\s*(.+?)\.?\s*Use read\b/i;
 
 export function spillPathOf(text) {
   const value = String(text ?? '');
   const match = value.match(SPILL_PATH);
-  return match ? match[1].trim() : '';
+  const path = match ? match[1].trim() : '';
+  return path.startsWith('<') ? '' : path;
 }
 
 /** 读 spill 文件；不存在、超上限、读失败都返回空串，让调用方退回正文预览。 */

@@ -24,6 +24,9 @@ const MAX_HITS = 2;
 const MAX_CHARS = 600;
 const TURN_WINDOW_MS = 30 * 24 * 3600 * 1000;
 const CACHE_SIZE = 3;
+// used 结算窗口：最近这么多条注入记录之外，一律结算成「没用上」。
+// 窗口写一处——结算窗和判定窗必须一致，否则「判了没结算」或反过来。
+const USED_WINDOW = 40;
 // 向量请求失败后冷却一分钟：Ollama 冷启动/掉线时，别让每一轮都赔进去
 // 两三秒的等待，等它自己热起来再试。
 let vectorCooldownUntil = 0;
@@ -719,7 +722,7 @@ export function markRecallUsed(db, { sid, text }) {
        AND id NOT IN (
          SELECT id FROM recall_log
          WHERE sid = ? AND used IS NULL AND memory_id IS NOT NULL
-         ORDER BY id DESC LIMIT 40
+         ORDER BY id DESC LIMIT ${USED_WINDOW}
        )`,
   ).run(String(sid), String(sid));
   if (!text) return 0;
@@ -732,7 +735,7 @@ export function markRecallUsed(db, { sid, text }) {
        JOIN memories m ON m.id = l.memory_id
        WHERE l.sid = ? AND l.used IS NULL AND l.memory_id IS NOT NULL
        ORDER BY l.id DESC
-       LIMIT 40`,
+       LIMIT ${USED_WINDOW}`,
     )
     .all(String(sid));
   if (rows.length === 0) return 0;

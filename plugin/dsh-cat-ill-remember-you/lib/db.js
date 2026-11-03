@@ -167,6 +167,9 @@ CREATE INDEX IF NOT EXISTS idx_persona_target ON persona (target, importance, t)
 
 -- full 模式每轮都会写一行 shadow_v2，按 sid 查旧块时没有索引会全表扫。
 CREATE INDEX IF NOT EXISTS idx_shadow_v2_sid ON shadow_v2 (sid, applied);
+-- used 结算每轮跑两条语句（结算 UPDATE + 判定 SELECT），没有索引就是全表扫；
+-- 三段覆盖：sid 等值、used IS NULL、id DESC 排序。
+CREATE INDEX IF NOT EXISTS idx_recall_log_sid ON recall_log (sid, used, id);
 `;
 
 /**

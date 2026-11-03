@@ -217,3 +217,25 @@ test('spillPathOf: 认新格式（开括号 + .txt），不认 <path> 占位', (
   assert.equal(spillPathOf('(9 bytes omitted. Full formatted result stored at: <path>. Use read.)'), '');
   assert.equal(spillPathOf('nothing here'), '');
 });
+
+test('spillPathOf: 空格路径、.txt.bak、.TXT、目录名含 .txt 都完整取出', () => {
+  const cases = [
+    [
+      String.raw`(1 bytes omitted. Full formatted result stored at: C:\Users\A B\AppData\Local\Temp\dsh-spill-x\abc-read.txt. Use read.)`,
+      String.raw`C:\Users\A B\AppData\Local\Temp\dsh-spill-x\abc-read.txt`,
+    ],
+    [
+      String.raw`(1 bytes omitted. Full formatted result stored at: C:\Temp\x\a.txt.bak. Use read.)`,
+      String.raw`C:\Temp\x\a.txt.bak`,
+    ],
+    [
+      String.raw`(1 bytes omitted. Full formatted result stored at: C:\Temp\x\abc-read.TXT. Use read.)`,
+      String.raw`C:\Temp\x\abc-read.TXT`,
+    ],
+    [
+      String.raw`(1 bytes omitted. Full formatted result stored at: C:\Temp\notes.txt.d\abc-read.txt. Use read.)`,
+      String.raw`C:\Temp\notes.txt.d\abc-read.txt`,
+    ],
+  ];
+  for (const [input, expected] of cases) assert.equal(spillPathOf(input), expected);
+});
