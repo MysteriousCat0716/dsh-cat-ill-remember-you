@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openStore, insertTurn } from '../lib/db.js';
-import { queryOf, knownOf, retrieve, renderHint } from '../lib/recall.js';
+import { queryOf, knownOf, retrieve, renderHint, markRecallUsed } from '../lib/recall.js';
 
 // 单元测试不依赖本机 Ollama：向量路径关闭，纯函数在 embed.test.js 里测。
 process.env.DSH_MEMORY_CORE_VECTOR = 'off';
@@ -391,5 +391,34 @@ test('retrieve: 有锚点时走正常匹配，不标弱匹配', async () => {
   const hits = await retrieve(db, { text: '产出/插件/foo.js 还要改吗' });
   assert.equal(hits.length, 1);
   assert.equal(hits[0].why.includes('弱匹配'), false);
+  db.close();
+});
+
+test('markRecallUsed: 回复里出现取回过的锚点才算用了，没出现的不动', () => {
+  const db = openStore(':memory:');
+  const memory = db
+    .prepare(
+      `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+       VALUES ('decision', '缓存按 mtime 失效。', '缓存按 mtime 失效', '[]', ?, '规则提炼：decision', 'active', 1000)`,
+    )
+    .run(JSON.stringify(['lib/recall.js']));
+  const memoryId = Number(memory.lastInsertRowid);
+  const log = db
+    .prepare('INSERT INTO recall_log (sid, turn, t, memory_id, why) VALUES (?, ?, ?, ?, ?)')
+    .run('s1', 3, 1100, memoryId, '本周提到过这个文件');
+  const logId = Number(log.lastInsertRowid);
+
+  // 回复没提这个文件：不算用上。
+  assert.equal(markRecallUsed(db, { sid: 's1', text: '好，那就先不动。' }), 0);
+  assert.equal(db.prepare('SELECT used FROM recall_log WHERE id = ?').get(logId).used, null);
+
+  // 别的会话提到也不算：抑制和回填都按 sid 隔离。
+  assert.equal(markRecallUsed(db, { sid: 's2', text: 'lib/recall.js 改了没' }), 0);
+
+  // 同会话回复里真的说了这个文件：回填 used=1。
+  assert.equal(markRecallUsed(db, { sid: 's1', text: 'lib/recall.js 的缓存已经按 mtime 失效。' }), 1);
+  assert.equal(db.prepare('SELECT used FROM recall_log WHERE id = ?').get(logId).used, 1);
+  // 已标记的不重复计数。
+  assert.equal(markRecallUsed(db, { sid: 's1', text: 'lib/recall.js 再确认一次。' }), 0);
   db.close();
 });

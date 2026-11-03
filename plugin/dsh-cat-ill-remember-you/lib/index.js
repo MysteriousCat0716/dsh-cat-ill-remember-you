@@ -5,7 +5,7 @@ import path from 'node:path';
 import { openStore, pendingCount } from './db.js';
 import { refine } from './extract.js';
 import { ingestEvent, textOf } from './ingest.js';
-import { retrieve, renderHint } from './recall.js';
+import { retrieve, renderHint, markRecallUsed } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { planShadowV2, replaceMode, setShadowLogger } from './shadow-v2.js';
 import { backfillStack, renderStack, stackQueryText } from './context-stack.js';
@@ -192,6 +192,17 @@ export function apply(ctx) {
           planShadowV2(session, db);
         } catch (error) {
           log(`shadow-v2 failed: ${error?.message ?? error}`);
+        }
+        // 闭环：回复里真的出现了取回过的锚点/实体，这条 recall_log 才算 used。
+        // 之前只有「注入」这个动作被记账，没有「用了」——所有判据都缺落点。
+        try {
+          const used = markRecallUsed(db, {
+            sid: String(session?.id ?? session?.sessionId ?? ''),
+            text: textOf(event?.data?.message),
+          });
+          if (used > 0) log(`recall used=${used}`);
+        } catch (error) {
+          log(`recall used failed: ${error?.message ?? error}`);
         }
       }
     } catch (error) {

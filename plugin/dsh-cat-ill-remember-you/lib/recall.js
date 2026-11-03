@@ -500,6 +500,44 @@ export async function retrieve(
  * Render the hint appended before the model turn.
  * @param {Array<{kind:string, summary:string, t:number}>} hits
  */
+/**
+ * 回复落库后回填 recall_log.used：模型有没有把取回的东西真的说出来。
+ *
+ * 判据故意从宽（回复里出现这条记忆的任一锚点/实体就算），先让 used 有数据。
+ * 跑一周看 used=1 占总注入的比例：低于 30% 说明取回策略有问题，高于 80%
+ * 说明判据太松——`dsh`、`记忆` 这类词太容易复现。
+ *
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {{sid:string, text:string}} input
+ * @returns {number} 被标记的行数
+ */
+export function markRecallUsed(db, { sid, text }) {
+  if (!sid || !text) return 0;
+  const terms = new Set([...anchorsOf(text), ...entitiesOf(text)]);
+  if (terms.size === 0) return 0;
+  const rows = db
+    .prepare(
+      `SELECT l.id, m.anchors, m.entities
+       FROM recall_log l
+       JOIN memories m ON m.id = l.memory_id
+       WHERE l.sid = ? AND l.used IS NULL AND l.memory_id IS NOT NULL
+       ORDER BY l.id DESC
+       LIMIT 40`,
+    )
+    .all(String(sid));
+  if (rows.length === 0) return 0;
+  const update = db.prepare('UPDATE recall_log SET used = 1 WHERE id = ?');
+  let marked = 0;
+  for (const row of rows) {
+    const owned = [...parseList(row.anchors), ...parseList(row.entities)];
+    if (owned.some((token) => terms.has(token))) {
+      update.run(row.id);
+      marked += 1;
+    }
+  }
+  return marked;
+}
+
 export function renderHint(hits) {
   if (!hits || hits.length === 0) return '';
   const lines = [
