@@ -104,6 +104,21 @@ test('retrieve: L3 falls back to raw turns only with a referent', async () => {
   assert.ok(hits[0].why.includes('产出/插件/foo.js'));
 });
 
+test('retrieve: 只有指代、抽不出名词时也要翻原文', async () => {
+  const db = openStore(':memory:');
+  insertTurn(db, {
+    sid: 's1',
+    seq: 1,
+    role: 'user',
+    text: '那件事的结论是先不换缓存，等两天再说。',
+    t: 500,
+  });
+  const hits = await retrieve(db, { text: '你还记得上次那件事吗', recent: [], now: 1000 });
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].source, 'turn');
+  db.close();
+});
+
 test('retrieve: L3 只回看同一个 workspace 的原文', async () => {
   const db = openStore(':memory:');
   insertTurn(db, {

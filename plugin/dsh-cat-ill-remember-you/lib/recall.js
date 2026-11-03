@@ -405,41 +405,48 @@ export async function retrieve(
       ...query.anchors.slice(0, 3),
       ...query.entities.filter((value) => value.length >= 2).slice(0, 3),
     ];
-    if (terms.length) {
-      const clauses3 = terms.map(() => "text LIKE ? ESCAPE '\\'").join(' OR ');
-      const values = terms.map((term) => `%${escapeLike(term)}%`);
-      // 原文层只回看同一个 workspace：别的项目的会话尾巴不是「我们说过」。
-      // cwd 缺失（老会话、拿不到 header）时退回旧行为，宁可少过滤也不把这层变哑。
-      const cwdClause = cwd ? ' AND cwd = ?' : '';
-      const cwdParams = cwd ? [cwd] : [];
-      const rows = db
-        .prepare(
-          `SELECT id, sid, seq, role, text, t FROM turns
-           WHERE origin = 'chat'${cwdClause} AND (${clauses3}) AND t >= ? ORDER BY t DESC LIMIT 6`,
-        )
-        .all(...cwdParams, ...values, now - TURN_WINDOW_MS);
-      for (const row of rows) {
-        const text = String(row.text ?? '');
-        // The current message is already in `turns`; pasting it back as "what
-        // we said before" is not a memory. Skip it and anything this round
-        // already has in context.
-        if (text === query.text) continue;
-        const item = {
-          source: 'turn',
-          id: row.id,
-          kind: row.role,
-          summary: text.slice(0, 120),
-          text,
-          t: Number(row.t ?? 0),
-          anchors: anchorsOf(text),
-          entities: entitiesOf(text),
-          why: '',
-        };
-        // 原文层按 turn id 记，和记忆 id 不同源，不能拿 given 抑制；
-        // 同一句已经在上下文里的情况由上一行的 text 比较挡掉。
-        item.why = whyOf(item, query);
-        push(item);
-      }
+    // 没抽出名词不等于没有「上次那件事」：「你还记得上次那件事吗」整句没有锚点，
+    // 旧实现直接跳过，最该翻原文的时候反而查不到。这时退回最近几条原文——
+    // referral 本身已经把范围压到「最近聊过的东西」。
+    const clauses3 = terms.length
+      ? terms.map(() => "text LIKE ? ESCAPE '\\'").join(' OR ')
+      : '1 = 1';
+    const values = terms.map((term) => `%${escapeLike(term)}%`);
+    // 原文层只回看同一个 workspace：别的项目的会话尾巴不是「我们说过」。
+    // cwd 缺失（老会话、拿不到 header）时退回旧行为，宁可少过滤也不把这层变哑。
+    const cwdClause = cwd ? ' AND cwd = ?' : '';
+    const cwdParams = cwd ? [cwd] : [];
+    const rows = db
+      .prepare(
+        `SELECT id, sid, seq, role, text, t FROM turns
+         WHERE origin = 'chat'${cwdClause} AND (${clauses3}) AND t >= ? ORDER BY t DESC LIMIT 6`,
+      )
+      .all(...cwdParams, ...values, now - TURN_WINDOW_MS);
+    for (const row of rows) {
+      const text = String(row.text ?? '');
+      // The current message is already in `turns`; pasting it back as "what
+      // we said before" is not a memory. Skip it and anything this round
+      // already has in context.
+      if (text === query.text) continue;
+      const item = {
+        source: 'turn',
+        id: row.id,
+        kind: row.role,
+        summary: text.slice(0, 120),
+        text,
+        t: Number(row.t ?? 0),
+        anchors: anchorsOf(text),
+        entities: entitiesOf(text),
+        why: '',
+      };
+      // 原文层按 turn id 记，和记忆 id 不同源，不能拿 given 抑制；
+      // 同一句已经在上下文里的情况由上一行的 text 比较挡掉。
+      // 没有名词时 whyOf 交回空串，push 会把整条丢掉；这里补一句来源说明，
+      // 否则「只有指代」这条通路等于白改。
+      item.why = terms.length
+        ? whyOf(item, query)
+        : '这一轮只有指代、抽不出名词；按「上次那件事」回看最近的原文。';
+      push(item);
     }
   }
 
