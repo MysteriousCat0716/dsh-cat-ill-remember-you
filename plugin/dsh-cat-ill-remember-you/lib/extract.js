@@ -14,7 +14,16 @@ export const JUDGE =
 const ANCHOR_FILE =
   /[A-Za-z]:[\\/][^\s"'）)】\]，,；;]+|[^\s"'）)】\]，,；;：:]+\.(?:mjs|js|ts|tsx|md|json|ya?ml|py|sh|ps1|cmd|txt|png|svg|db)/g;
 const ANCHOR_MSG = /\bm\d{5}\b/g;
-const ENTITY = /猫|岸|DeepSeek|dsh[\w-]*|Ollama|qwen[\w.:-]*/g;
+const ENTITY = /猫|岸|DeepSeek|dsh[\w-]*|Ollama|qwen[\w.:-]*|[A-Z][a-z]+[A-Z][A-Za-z0-9]+/g;
+// 「X：」式的定义句：行首/句末的「FastAPI：…」「木兰：…」。
+// 只认 2 到 15 个字符，并挡掉「结论：」「注意：」这类模板词——
+// 它们不是名字，抽进 people 分区只会让那一层变噪音。
+const ENTITY_DEF = /(?:^|[\n。；!?！？])\s*([一-龥A-Za-z][一-龥A-Za-z0-9_-]{1,14})\s*[：:]/g;
+const ENTITY_DEF_STOP = new Set([
+  '结论', '注意', '问题', '下一步', '原因', '理由', '计划', '做法', '判断',
+  '背景', '目标', '现状', '决定', '原则', '规则', '建议', '方法', '步骤',
+  '结果', '说明', '回答', '答案', '用途', '范围', '前提', '目的', '定义',
+]);
 
 const MAX_TURNS = 40;
 const MAX_BLOCK_CHARS = 2400;
@@ -104,6 +113,12 @@ export function entitiesOf(text) {
   const set = new Set();
   const s = String(text ?? '').slice(0, 8000);
   for (const match of s.matchAll(ENTITY)) set.add(match[0]);
+  // 名单之外的专名靠「X：」定义句补：人是先给名字再展开说的。
+  // 中文引号/书名号里的词先不抽——「那个“缓存”」这种普通名词会被误当实体。
+  for (const match of s.matchAll(ENTITY_DEF)) {
+    const name = match[1].trim();
+    if (name.length >= 2 && !ENTITY_DEF_STOP.has(name)) set.add(name);
+  }
   return [...set].slice(0, 8);
 }
 

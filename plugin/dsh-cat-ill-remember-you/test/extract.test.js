@@ -207,3 +207,10 @@ test('refine: empty queue is a no-op', () => {
   const db = openStore(':memory:');
   assert.deepEqual(refine(db), { turns: 0, memories: 0 });
 });
+
+test('entitiesOf: 驼峰词和「X：」定义句都抽得到，模板词不进 people', () => {
+  const names = entitiesOf('用 FastAPI 写接口。木兰：负责采样的人。结论：先做适配层。');
+  assert.ok(names.includes('FastAPI'));
+  assert.ok(names.includes('木兰'));
+  assert.ok(!names.includes('结论'));
+});
