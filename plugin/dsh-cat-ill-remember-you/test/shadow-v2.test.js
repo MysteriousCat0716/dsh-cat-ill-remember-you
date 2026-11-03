@@ -13,6 +13,7 @@ import {
   assessReplacement,
   applyReplacement,
   planShadowV2,
+  replaceMode,
 } from '../lib/shadow-v2.js';
 
 /** 假 session：nodes 是 seq 数组，eventAt/deriveEventMessage 按 seq 取回。 */
@@ -68,6 +69,25 @@ function useWhitelist(sids) {
     list.cleanup();
   };
 }
+
+// 缓存按 mtime+size 失效：文件改写后必须立刻读到新内容。
+test('replaceMode: 白名单文件改写后立即生效（缓存按 mtime+size 失效）', () => {
+  const list = tempSessionList(['sid-a']);
+  const previous = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  try {
+    assert.equal(replaceMode('sid-a'), 'roll');
+    assert.equal(replaceMode('sid-b'), 'off');
+    // 同一路径重写：内容变长，size 和 mtime 都会变，缓存必须跟着失效。
+    fs.writeFileSync(list.file, 'sid-a\nsid-b:full\n', 'utf8');
+    assert.equal(replaceMode('sid-b'), 'full');
+    assert.equal(replaceMode('sid-c'), 'off');
+  } finally {
+    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previous;
+    list.cleanup();
+  }
+});
 
 /**
  * 记账与替换都只发生在白名单内的会话；测试默认把所有用到的 sid 放进白名单。

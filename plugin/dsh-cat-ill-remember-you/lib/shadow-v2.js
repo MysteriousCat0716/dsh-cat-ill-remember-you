@@ -302,6 +302,40 @@ function sessionsFile() {
   return process.env[REPLACE_SESSIONS_FLAG] || REPLACE_SESSIONS_FILE;
 }
 
+// 白名单文件很小，但 replaceMode 会被 provider.text() 每次 refresh 调到，
+// 也会在每个 assistant 事件里调到。按 mtime+size 缓存内容，只在文件真变了
+// 才重读；读失败不写缓存，文件后来出现仍能读到。
+const sessionsCache = { file: '', mtimeMs: -1, size: -1, text: null };
+
+function sessionsText() {
+  const file = sessionsFile();
+  let stat;
+  try {
+    stat = fs.statSync(file);
+  } catch {
+    return null;
+  }
+  const { mtimeMs, size } = stat;
+  if (
+    sessionsCache.file === file
+    && sessionsCache.mtimeMs === mtimeMs
+    && sessionsCache.size === size
+  ) {
+    return sessionsCache.text;
+  }
+  let text;
+  try {
+    text = fs.readFileSync(file, 'utf8');
+  } catch {
+    return null;
+  }
+  sessionsCache.file = file;
+  sessionsCache.mtimeMs = mtimeMs;
+  sessionsCache.size = size;
+  sessionsCache.text = text;
+  return text;
+}
+
 export function replaceEnabled(sid) {
   return replaceMode(sid) !== 'off';
 }
@@ -313,18 +347,29 @@ export function replaceEnabled(sid) {
  * @returns {'off'|'roll'|'full'}
  */
 export function replaceMode(sid) {
-  let lines;
-  try {
-    lines = fs.readFileSync(sessionsFile(), 'utf8').split(/\r?\n/);
-  } catch {
-    return 'off';
-  }
-  const allowed = lines.map((line) => line.trim()).filter(Boolean);
+  const text = sessionsText();
+  if (text == null) return 'off';
+  const allowed = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   if (allowed.length === 0) return 'off';
   const id = sid == null ? '' : String(sid);
   if (allowed.includes('*:full') || allowed.includes(`${id}:full`)) return 'full';
   if (allowed.includes('*') || allowed.includes(id)) return 'roll';
   return 'off';
+}
+
+/** 上一次记账是不是同一个区间且已应用——是就不用再算一遍。 */
+function sameRangeApplied(db, sid, rangeStart, rangeEnd) {
+  const last = db
+    .prepare(
+      'SELECT range_start, range_end, applied FROM shadow_v2 WHERE sid = ? ORDER BY id DESC LIMIT 1',
+    )
+    .get(sid);
+  return Boolean(
+    last
+    && last.range_start === rangeStart
+    && last.range_end === rangeEnd
+    && Number(last.applied) === 1,
+  );
 }
 
 /**
@@ -458,6 +503,9 @@ export function planShadowV2(
     covered = nodes.slice(0, cutIndex);
     rangeStart = covered[0];
     rangeEnd = covered.at(-1);
+    // 热路径：每个 assistant 事件都会重新算计划，但窗口多半没动。区间没变
+    // 就直接返回，不查 turns 全表（full 分支最贵的一次查询）。
+    if (sameRangeApplied(db, sid, rangeStart, rangeEnd)) return null;
     // 替换块盖住的原文已经离开 surface，只有 turns 还留着。区间覆盖的是
     // surface 上除保留区外的全部节点，所以原文 = turns 里除保留区 seq 外的
     // 全部 chat 行——不能按 seq < rangeEnd 取：surface 节点顺序和 seq 并不
@@ -492,18 +540,8 @@ export function planShadowV2(
   rangeEnd = rangeEnd ?? replaced.at(-1).seq;
   // 同一区间不重复记账：每轮都会重算，但被换的窗口没动就没新信息。
   // 上一次 apply 失败（applied=0）时允许重试，否则一次微任务失败会让
-  // 这段永远停在原文。
-  const last = db
-    .prepare('SELECT range_start, range_end, applied FROM shadow_v2 WHERE sid = ? ORDER BY id DESC LIMIT 1')
-    .get(sid);
-  if (
-    last
-    && last.range_start === rangeStart
-    && last.range_end === rangeEnd
-    && Number(last.applied) === 1
-  ) {
-    return null;
-  }
+  // 这段永远停在原文。full 分支在上面已经判过，这里主要挡 roll/兜底。
+  if (sameRangeApplied(db, sid, rangeStart, rangeEnd)) return null;
   const text = renderReplacement(replaced);
   const assessment = assessReplacement({ replaced, kept, text });
   const charsBefore = replaced.reduce((total, entry) => total + entry.text.length, 0);
