@@ -258,7 +258,7 @@ function weightOf(db, term) {
   let df = freq.get(key);
   if (df === undefined) {
     try {
-      df = Number(db.prepare("SELECT count(*) AS c FROM memories WHERE summary LIKE ? ESCAPE '\\\\'").get(`%${key}%`)?.c) || 0;
+      df = Number(db.prepare("SELECT count(*) AS c FROM memories WHERE summary LIKE ? ESCAPE '\\'").get(`%${key}%`)?.c) || 0;
     } catch {
       df = 0;
     }
@@ -470,10 +470,11 @@ export async function retrieve(
     }
   }
 
-  // L2.5: 弱匹配。锚点、实体都没有——这句话是聊天，不是指针，前面的层
-  // 没有东西可对。用句子里的实词在记忆正文里找最近一条，最多一条，
-  // why 写明「弱匹配」：放宽的代价要留在账上，不能假装它和锚点命中同权。
-  if (hits.length === 0 && query.anchors.length === 0 && query.entities.length === 0) {
+  // L2.5: 弱匹配。锚点、实体抽不出东西（或抽出了、前面的层没对上）时，
+  // 用句子里的实词在记忆正文里找。旧实现要求「前面全空」才跑，而向量层
+  // 已经先占了一个槽位，这一层几乎永远轮不到——变成只有向量失败时才兜底。
+  // 现在只要还差一条就试，让词面重合和语义相近各拿一次机会。
+  if (hits.length < MAX_HITS) {
     const terms = weakTerms(query.text);
     if (terms.length) {
       const like = terms.map(() => `(text LIKE ? ESCAPE '\\')`).join(' OR ');
@@ -485,13 +486,11 @@ export async function retrieve(
            ORDER BY t DESC LIMIT 10`,
         )
         .all(...values);
-      // 候选扩到 10 条，再按稀有度/条内重复打分选一条——只取最新那条的话，
-      // 权重再准也没有参与排序的机会。
       const countStmt = db.prepare(
         "SELECT count(*) AS c FROM memories WHERE text LIKE ? ESCAPE '\\'",
       );
       const weightOf = new Map();
-      let best = null;
+      const candidates = [];
       for (const row of rows) {
         const item = rowToItem(row, 'memory');
         if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
@@ -499,10 +498,16 @@ export async function retrieve(
         if (score <= 0) continue;
         item.section = 'weak';
         item.score = score;
-        item.why = `这一轮没给锚点也没给实体；这条和当前句子有词面重合（${terms.slice(0, 3).join('、')}…），属弱匹配。`;
-        if (!best || score > best.score) best = item;
+        item.why = `这一轮锚点/实体没对上；这条和当前句子有词面重合（${terms.slice(0, 3).join('、')}…），属弱匹配。`;
+        candidates.push(item);
       }
-      if (best) push(best);
+      // 弱匹配的分数是「稀有度 × 条内重复」的累加，量纲和向量的 0–1 不一样；
+      // 不归一化的话，一条长文靠重复次数就能压过语义命中。
+      const top = candidates.reduce((max, item) => Math.max(max, item.score), 0);
+      for (const item of candidates) {
+        item.score = top > 0 ? item.score / top : 0;
+        push(item);
+      }
     }
   }
 

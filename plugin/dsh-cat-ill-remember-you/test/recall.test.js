@@ -460,7 +460,9 @@ test('retrieve: 弱匹配按稀有词选，不按新旧选', async () => {
     recent: [],
     now: 5000,
   });
-  assert.equal(hits.length, 1);
+  // 弱匹配层现在可以交多条候选参与排序（不再只兜一条），最终仍受 2 条预算限制；
+  // 判据是「稀有词那条排第一」，不是「只回一条」。
+  assert.ok(hits.length <= 2);
   assert.equal(hits[0].summary, '幂等操作');
   db.close();
 });
