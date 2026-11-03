@@ -41,6 +41,35 @@ test('queryOf: 长句里的锚点不在指代片段里也要抽到', async () =>
   assert.ok(query.anchors.includes('lib/recall.js'));
 });
 
+test('retrieve: 同一锚点命中多条时，按相关度取而不是按时间取', async () => {
+  const db = openStore(':memory:');
+  const insert = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('decision', ?, ?, '[]', ?, '规则提炼：decision', 'active', ?)`,
+  );
+  // 旧的这条同时提到两个路径，和这轮的话重合更多。
+  insert.run(
+    'lib/recall.js 和 lib/ingest.js 都要先读再改。',
+    '两个文件都要先读再改（旧）',
+    JSON.stringify(['lib/recall.js', 'lib/ingest.js']),
+    1000,
+  );
+  // 新的这条只提到一个，但因为更新，旧排序会先选它。
+  insert.run(
+    'lib/recall.js 的缓存按 mtime 失效。',
+    'recall.js 缓存按 mtime 失效（新）',
+    JSON.stringify(['lib/recall.js']),
+    2000,
+  );
+  const hits = await retrieve(db, {
+    text: 'lib/recall.js 和 lib/ingest.js 这两个文件现在怎么改',
+    recent: [],
+    now: 3000,
+  });
+  assert.equal(hits[0].summary.includes('两个文件都要先读再改'), true);
+  db.close();
+});
+
 test('retrieve: anchor match returns one hit with a written why', async () => {
   const db = makeDb();
   const hits = await retrieve(db, { text: '产出/插件/foo.js 这个文件还要改吗', recent: [] });

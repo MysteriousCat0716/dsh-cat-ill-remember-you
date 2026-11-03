@@ -184,6 +184,14 @@ function whyOf(item, query) {
   return `这一轮提到 ${hit.value}，当前上下文里还没有它之前的结论；这条补上。`;
 }
 
+// 相关度粗分：命中的锚点/实体越多越相关。不做归一化——排序只需要可比，
+// 归一成 0-1 反而是在假装精度。
+function scoreOf(item, query) {
+  const anchors = item.anchors.filter((value) => query.anchors.includes(value)).length;
+  const entities = item.entities.filter((value) => query.entities.includes(value)).length;
+  return anchors * 2 + entities;
+}
+
 // 「这一轮已经给过哪条」按记忆 id 记，不按词面。
 // 旧实现只要 item 的任一锚点在本轮上下文出现过就丢整条——越在聊越不召回：
 // 正在讨论 `recall.js` 时，讲它历史决策的那条反而被「这个词出现过」挡掉。
@@ -252,15 +260,19 @@ export async function retrieve(
          ORDER BY t DESC LIMIT 6`,
       )
       .all(...query.entities);
+    // 候选按 t 取 6 条，选重合最多的那条，不是最新的那条。
+    let best = null;
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
       if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
-      const entity = item.entities.find((value) => query.entities.includes(value));
-      if (!entity) continue;
-      item.section = 'people';
-      item.why = `这一轮提到 ${entity}；这条记的是与它有关的旧事。`;
-      push(item);
-      break;
+      item.score = scoreOf(item, query);
+      if (!best || item.score > best.score) best = item;
+    }
+    if (best) {
+      const entity = best.entities.find((value) => query.entities.includes(value));
+      best.section = 'people';
+      best.why = `这一轮提到 ${entity}；这条记的是与它有关的旧事。`;
+      push(best);
     }
   }
 
@@ -276,15 +288,19 @@ export async function retrieve(
          ORDER BY t DESC LIMIT 6`,
       )
       .all(...toolAnchors);
+    // 同上：在候选里选重合最多的那条，不赌时间。
+    let best = null;
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
       if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
-      const anchor = item.anchors.find((value) => toolAnchors.includes(value));
-      if (!anchor) continue;
-      item.section = 'tools';
-      item.why = `这一轮提到 ${anchor}；这条记着它的用法或坑。`;
-      push(item);
-      break;
+      item.score = scoreOf(item, query);
+      if (!best || item.score > best.score) best = item;
+    }
+    if (best) {
+      const anchor = best.anchors.find((value) => toolAnchors.includes(value));
+      best.section = 'tools';
+      best.why = `这一轮提到 ${anchor}；这条记着它的用法或坑。`;
+      push(best);
     }
   }
 
@@ -298,6 +314,7 @@ export async function retrieve(
   for (const row of cacheRows) {
     const item = rowToItem(row, 'memory');
     if (!sharedWith(item, query) || given.has(`memory:${item.id}`)) continue;
+    item.score = scoreOf(item, query) || 1;
     item.why = whyOf(item, query) || '刚才还在说它，缓存里直接取。';
     push(item);
   }
@@ -320,12 +337,13 @@ export async function retrieve(
       .prepare(
         `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
          WHERE tier = 'active' AND origin = 'chat' AND (${clauses.join(' OR ')})
-         ORDER BY t DESC LIMIT 8`,
+         ORDER BY t DESC LIMIT 24`,
       )
       .all(...params);
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
       if (given.has(`memory:${item.id}`)) continue;
+      item.score = scoreOf(item, query);
       item.why = whyOf(item, query);
       push(item);
     }
@@ -362,6 +380,7 @@ export async function retrieve(
           const item = rowToItem(row, 'memory');
           if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
           item.section = 'vector';
+          item.score = candidate.score;
           item.why = `这一轮没给锚点也没给实体；这条语义相近（${candidate.score.toFixed(3)}）。`;
           push(item);
           break;
@@ -393,6 +412,7 @@ export async function retrieve(
         const item = rowToItem(row, 'memory');
         if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
         item.section = 'weak';
+        item.score = 0.1;
         item.why = `这一轮没给锚点也没给实体；这条和当前句子有词面重合（${terms.slice(0, 3).join('、')}…），属弱匹配。`;
         push(item);
         break;
@@ -444,6 +464,7 @@ export async function retrieve(
       // 同一句已经在上下文里的情况由上一行的 text 比较挡掉。
       // 没有名词时 whyOf 交回空串，push 会把整条丢掉；这里补一句来源说明，
       // 否则「只有指代」这条通路等于白改。
+      item.score = terms.length ? scoreOf(item, query) : 0.05;
       item.why = terms.length
         ? whyOf(item, query)
         : '这一轮只有指代、抽不出名词；按「上次那件事」回看最近的原文。';
@@ -452,8 +473,12 @@ export async function retrieve(
   }
 
   // 分区优先级：人物 → 工具 → 按需。前两个各最多一条，都算进 2 条总预算。
+  // 同一分区里先看相关度，再看时间。旧的排序只看 t：同一个锚点命中十几条时，
+  // 回来的是最新的几条，真正对得上的那条可能排不进来。
   const rank = (hit) => (hit.section === 'people' ? 0 : hit.section === 'tools' ? 1 : 2);
-  const ordered = hits.slice().sort((a, b) => rank(a) - rank(b) || b.t - a.t);
+  const ordered = hits
+    .slice()
+    .sort((a, b) => rank(a) - rank(b) || (b.score ?? 0) - (a.score ?? 0) || b.t - a.t);
   const picked = [];
   const seenAsks = new Set();
   const sectionCount = { people: 0, tools: 0 };
