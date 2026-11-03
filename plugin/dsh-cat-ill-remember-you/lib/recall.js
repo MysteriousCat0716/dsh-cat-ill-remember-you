@@ -11,12 +11,22 @@
 
 import { anchorsOf, entitiesOf } from './extract.js';
 import { splitMessage } from './split.js';
+import {
+  DEFAULT_ENDPOINT,
+  DEFAULT_MODEL,
+  embedText,
+  endpointReady,
+  nearestByVector,
+} from './embed.js';
 
 const REFERRAL = /(之前|上次|上回|那个|这个|这句|这份|这条|这段|那件|那事|还说过|刚才|前面|说过|提过|记得|上一条|刚刚)/;
 const MAX_HITS = 2;
 const MAX_CHARS = 600;
 const TURN_WINDOW_MS = 30 * 24 * 3600 * 1000;
 const CACHE_SIZE = 3;
+// 向量请求失败后冷却一分钟：Ollama 冷启动/掉线时，别让每一轮都赔进去
+// 两三秒的等待，等它自己热起来再试。
+let vectorCooldownUntil = 0;
 
 // 常驻分区：长期有效的偏好与约定，每轮都在场，不靠抽查到才出现。
 // 上限单独算——它不是「这一轮缺什么」，占的是固定预算。
@@ -184,7 +194,16 @@ function inKnown(item, known) {
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {{text:string, recent?:string[], now?:number, cwd?:string}} input
  */
-export function retrieve(db, { text, recent = [], now = Date.now(), cwd = '' } = {}) {
+export async function retrieve(
+  db,
+  {
+    text,
+    recent = [],
+    now = Date.now(),
+    cwd = '',
+    vector = process.env.DSH_MEMORY_CORE_VECTOR !== 'off',
+  } = {},
+) {
   const query = queryOf(text);
   const known = knownOf(recent);
   const seen = new Set();
@@ -287,6 +306,49 @@ export function retrieve(db, { text, recent = [], now = Date.now(), cwd = '' } =
       if (inKnown(item, known)) continue;
       item.why = whyOf(item, query);
       push(item);
+    }
+  }
+
+  // L2.4: 向量候选。锚点、实体都没有时，用语义找一条；Ollama 不在就跳过，
+  // 不解释、不报错——降级回下面的词面弱匹配。why 写明是向量，别让它冒充锚点。
+  if (
+    hits.length === 0 &&
+    query.anchors.length === 0 &&
+    query.entities.length === 0 &&
+    vector &&
+    Date.now() > vectorCooldownUntil
+  ) {
+    try {
+      const endpoint = (
+        process.env.DSH_MEMORY_CORE_OLLAMA || DEFAULT_ENDPOINT
+      ).replace(/\/+$/, '');
+      if (await endpointReady(endpoint)) {
+        const model = process.env.DSH_MEMORY_CORE_EMBED_MODEL || DEFAULT_MODEL;
+        const probe = await embedText(query.text, { model, endpoint, timeoutMs: 2500 });
+        for (const candidate of nearestByVector(db, probe, { model, limit: 3 })) {
+          // 0.55 不是拍的：真实库里「考研还剩多久」对毕设那条是 0.568，
+          // 卡 0.6 会把它挡掉；再低就只剩「都像」的噪音。最多取一条，
+          // 所以宁可偏宽一点，让它在门内有一次机会。
+          if (candidate.score < 0.55) continue;
+          const row = db
+            .prepare(
+              `SELECT id, kind, summary, text, entities, anchors, t FROM memories
+               WHERE id = ? AND tier = 'active' AND origin = 'chat'`,
+            )
+            .get(candidate.memory_id);
+          if (!row) continue;
+          const item = rowToItem(row, 'memory');
+          if (seen.has(`memory:${item.id}`) || inKnown(item, known)) continue;
+          item.section = 'vector';
+          item.why = `这一轮没给锚点也没给实体；这条语义相近（${candidate.score.toFixed(3)}）。`;
+          push(item);
+          break;
+        }
+      }
+    } catch {
+      // Ollama 掉了、模型没拉、超时——都退回词面匹配，别让检索拖垮这一轮。
+      // 冷却一分钟，别让每轮都再等一次。
+      vectorCooldownUntil = Date.now() + 60_000;
     }
   }
 

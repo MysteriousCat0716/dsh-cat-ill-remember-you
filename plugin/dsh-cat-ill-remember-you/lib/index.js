@@ -12,7 +12,7 @@ import { backfillStack, renderStack, stackQueryText } from './context-stack.js';
 import { setOriginalsLogger } from './originals.js';
 import { backfillTurnCwd } from './backfill.js';
 import { forgetSweep } from './forget.js';
-import { embedPending } from './embed.js';
+import { embedPending, warmVector } from './embed.js';
 
 export const name = 'dsh-cat-ill-remember-you';
 
@@ -129,6 +129,11 @@ export function apply(ctx) {
   // failure (lock, half-written file) would otherwise silence the plugin for
   // the rest of the process. Listeners stay registered and reopen lazily.
   if (!currentStore()) log('store unavailable at load; will retry lazily');
+  // 预热 embedding 模型：第一次 recall 不该在对话路径上等冷启动。
+  // 后台跑，失败也不拦插件加载——Ollama 不在就退回词面召回。
+  void warmVector().then((ok) => {
+    if (ok) log('embed warm-up ok');
+  });
   // 记忆块走宿主的动态上下文通道：pre-step 只把文本放进 hintBySid，
   // provider 在 assemble 和 step() 的 refreshContext 时被求值。
   // 不能塞 decision.messages——宿主会把每条非 runtime-context 的消息 append
@@ -231,12 +236,12 @@ export function apply(ctx) {
         : recentTexts(messages);
       const query = [stackQueryText(db, { limit: 2 }), currentText].filter(Boolean).join('\n');
       if (query) {
-        let hits = retrieve(db, { text: query, cwd, recent });
+        let hits = await retrieve(db, { text: query, cwd, recent });
         if (hits.length === 0 && currentText) {
           // 同一句放到更宽的栈上下文里再联想一次；还不中就是真没有。
           const wider = [stackQueryText(db, { limit: 6 }), currentText].filter(Boolean).join('\n');
           if (wider !== query) {
-            hits = retrieve(db, { text: wider, cwd, recent });
+            hits = await retrieve(db, { text: wider, cwd, recent });
             if (hits.length > 0) log(`recall retry hits=${hits.length}`);
           }
         }

@@ -11,6 +11,8 @@
  * caller, which logs and moves on; nothing here may block the pre-step path.
  */
 
+import net from 'node:net';
+
 export const DEFAULT_MODEL = 'qwen3-embedding:0.6b';
 export const DEFAULT_ENDPOINT = 'http://127.0.0.1:11434';
 export const DEFAULT_BATCH = 16;
@@ -114,4 +116,125 @@ export function pendingEmbeddings(db, model = DEFAULT_MODEL) {
     )
     .get(model);
   return Number(row?.n ?? 0);
+}
+
+/**
+ * One vector for a free-text query. Throws on any failure — the caller is
+ * expected to catch and fall back to lexical recall; an embedding outage may
+ * never break the pre-step path.
+ * @param {string} text
+ * @param {{model?:string, endpoint?:string, timeoutMs?:number}} [options]
+ * @returns {Promise<number[]>}
+ */
+export async function embedText(text, options = {}) {
+  const model =
+    options.model || process.env.DSH_MEMORY_CORE_EMBED_MODEL || DEFAULT_MODEL;
+  const endpoint = (
+    options.endpoint ||
+    process.env.DSH_MEMORY_CORE_OLLAMA ||
+    DEFAULT_ENDPOINT
+  ).replace(/\/+$/, '');
+  // A cold Ollama has to load the model before the first vector; 4s covers
+  // that once, and keep_alive below keeps it from happening every turn.
+  const timeoutMs = positive(options.timeoutMs, 4000);
+  const response = await fetch(`${endpoint}/api/embed`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model,
+      input: [String(text ?? '')],
+      keep_alive: options.keepAlive || '30m',
+    }),
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!response.ok) {
+    throw new Error(`ollama /api/embed ${response.status} ${response.statusText}`);
+  }
+  const payload = await response.json();
+  const vector = Array.isArray(payload?.embeddings) ? payload.embeddings[0] : null;
+  if (!Array.isArray(vector) || vector.length === 0) {
+    throw new Error('ollama /api/embed returned no vector');
+  }
+  return vector;
+}
+
+/**
+ * Fast TCP probe. A closed Ollama must cost the turn ~300ms at most, not a
+ * full HTTP timeout on every single message.
+ * @param {string} [endpoint]
+ * @param {number} [timeoutMs]
+ */
+export function endpointReady(endpoint = DEFAULT_ENDPOINT, timeoutMs = 300) {
+  const url = new URL(endpoint.replace(/\/+$/, '') || DEFAULT_ENDPOINT);
+  const port = Number(url.port || (url.protocol === 'https:' ? 443 : 80));
+  return new Promise((resolve) => {
+    const socket = net.connect({ host: url.hostname, port });
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(value);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+}
+
+/** Cosine similarity; both vectors must have the same dimension. */
+export function cosine(a, b) {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+}
+
+function readVector(blob) {
+  const bytes = new Uint8Array(blob);
+  const aligned = bytes.slice().buffer;
+  return new Float32Array(aligned);
+}
+
+/**
+ * Nearest stored memories to one query vector, best first.
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {number[]} vector
+ * @param {{model?:string, limit?:number}} [options]
+ */
+export function nearestByVector(db, vector, options = {}) {
+  const model = options.model || DEFAULT_MODEL;
+  const limit = positive(options.limit, 3);
+  const rows = db
+    .prepare('SELECT memory_id, vec FROM embeddings WHERE model = ?')
+    .all(model);
+  const scored = [];
+  for (const row of rows) {
+    const other = readVector(row.vec);
+    if (other.length !== vector.length) continue;
+    scored.push({ memory_id: row.memory_id, score: cosine(vector, other) });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit);
+}
+
+/**
+ * Fire-and-forget: load the embedding model now, so the first recall of the
+ * session does not pay the cold-start cost on the turn path.
+ * @param {{model?:string, endpoint?:string, timeoutMs?:number}} [options]
+ */
+export async function warmVector(options = {}) {
+  try {
+    await embedText('预热', { ...options, timeoutMs: options.timeoutMs ?? 8000 });
+    return true;
+  } catch {
+    return false;
+  }
 }
