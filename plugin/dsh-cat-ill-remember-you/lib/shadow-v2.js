@@ -18,6 +18,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+let log = () => {};
+/** 注入日志：index.js 把宿主 log 接进来；没接时静默。 */
+export function setShadowLogger(fn) {
+  log = typeof fn === 'function' ? fn : () => {};
+}
+
 export const DEFAULT_KEEP = 10;
 export const DEFAULT_WINDOW = 40;
 // 保留区不再是固定 10 条：短会话也换，长会话多留。至少留 4 条原文，最多 10 条。
@@ -328,9 +334,18 @@ export function replaceMode(sid) {
  * @returns {boolean} 是否真的写入了替换事件
  */
 export function applyReplacement(session, replaced, text, sid, { startSeq = null, endSeq = null } = {}) {
-  if (!replaceEnabled(sid)) return false;
-  if (!Array.isArray(replaced) || replaced.length === 0) return false;
-  if (typeof session?.append !== 'function') return false;
+  if (!replaceEnabled(sid)) {
+    log(`apply skip: 不在白名单 sid=${sid}`);
+    return false;
+  }
+  if (!Array.isArray(replaced) || replaced.length === 0) {
+    log(`apply skip: 没有可替换原文 sid=${sid}`);
+    return false;
+  }
+  if (typeof session?.append !== 'function') {
+    log(`apply skip: session.append 不是函数 sid=${sid}`);
+    return false;
+  }
   const fromSeq = startSeq ?? replaced[0].seq;
   const toSeq = endSeq ?? replaced.at(-1).seq;
   const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes : [];
@@ -338,7 +353,10 @@ export function applyReplacement(session, replaced, text, sid, { startSeq = null
   // 后续区间中间。值过滤会把它漏掉，而宿主按位置判断 shadowedSeqs，报 missing。
   const startIdx = nodes.indexOf(fromSeq);
   let endIdx = nodes.indexOf(toSeq);
-  if (startIdx < 0 || endIdx < startIdx) return false;
+  if (startIdx < 0 || endIdx < startIdx) {
+    log(`apply skip: 区间不在表面 start=${fromSeq}(${startIdx}) end=${toSeq}(${endIdx}) nodes=${nodes.length}`);
+    return false;
+  }
   // 遮蔽区间不能切在 assistant 消息和它的 tool/call 之间：消息被换掉、
   // tool/call 还留在表面上，后端会收到没有对应调用的 tool 结果
   // （DeepSeek: Messages tool result has no matching call）。
@@ -347,11 +365,17 @@ export function applyReplacement(session, replaced, text, sid, { startSeq = null
     const nextEvent = nextSeq == null ? undefined : session.eventAt?.(nextSeq);
     if (!nextEvent || nextEvent.type !== 'tool/call') break;
     endIdx -= 1;
-    if (endIdx < startIdx) return false;
+    if (endIdx < startIdx) {
+      log(`apply skip: tool/call 回退越过起点 start=${fromSeq} end=${toSeq}`);
+      return false;
+    }
   }
   const lastSeq = nodes[endIdx];
   const seqs = nodes.slice(startIdx, endIdx + 1);
-  if (seqs.length === 0) return false;
+  if (seqs.length === 0) {
+    log(`apply skip: 区间为空 start=${fromSeq} end=${toSeq}`);
+    return false;
+  }
   try {
     session.append(
       'user/message',
@@ -368,7 +392,8 @@ export function applyReplacement(session, replaced, text, sid, { startSeq = null
       { surfaceOp: { op: 'replace', startSeq: fromSeq, endSeq: lastSeq }, sourceEventSeqs: seqs },
     );
     return true;
-  } catch {
+  } catch (error) {
+    log(`apply failed: ${error?.message ?? error} sid=${sid} start=${fromSeq} end=${lastSeq}`);
     return false;
   }
 }

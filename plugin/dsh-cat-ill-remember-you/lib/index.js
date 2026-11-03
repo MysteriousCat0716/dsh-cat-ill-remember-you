@@ -7,7 +7,7 @@ import { refine } from './extract.js';
 import { ingestEvent, textOf } from './ingest.js';
 import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
-import { planShadowV2, replaceMode } from './shadow-v2.js';
+import { planShadowV2, replaceMode, setShadowLogger } from './shadow-v2.js';
 import { backfillStack, renderStack, stackQueryText } from './context-stack.js';
 import { renderPersona } from './persona.js';
 import { setOriginalsLogger } from './originals.js';
@@ -66,6 +66,8 @@ function log(line) {
 export function apply(ctx) {
   // 原文读取的 warn 默认是空函数；不接上，跳过大文件/解压失败在生产里全是静默的。
   setOriginalsLogger(log);
+  // 替换失败的分支也接日志：applied=0 时得看得到是哪一条前置条件没过。
+  setShadowLogger(log);
   let store;
   // pre-step 算出的记忆块文本，按会话存；provider 在 assemble/refreshContext 时取。
   const hintBySid = new Map();
