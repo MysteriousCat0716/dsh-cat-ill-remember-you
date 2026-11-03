@@ -145,6 +145,9 @@ CREATE TABLE IF NOT EXISTS persona (
   UNIQUE (target, content)
 );
 CREATE INDEX IF NOT EXISTS idx_persona_target ON persona (target, importance, t);
+
+-- full 模式每轮都会写一行 shadow_v2，按 sid 查旧块时没有索引会全表扫。
+CREATE INDEX IF NOT EXISTS idx_shadow_v2_sid ON shadow_v2 (sid, applied);
 `;
 
 /**

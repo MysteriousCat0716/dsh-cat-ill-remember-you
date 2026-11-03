@@ -327,16 +327,17 @@ export function replaceMode(sid) {
  * surface.nodes 里落在区间内的全部 seq（含工具结果）。
  * @returns {boolean} 是否真的写入了替换事件
  */
-export function applyReplacement(session, replaced, text, sid) {
+export function applyReplacement(session, replaced, text, sid, { startSeq = null, endSeq = null } = {}) {
   if (!replaceEnabled(sid)) return false;
   if (!Array.isArray(replaced) || replaced.length === 0) return false;
   if (typeof session?.append !== 'function') return false;
-  const startSeq = replaced[0].seq;
+  const fromSeq = startSeq ?? replaced[0].seq;
+  const toSeq = endSeq ?? replaced.at(-1).seq;
   const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes : [];
   // 按位置取区间，不按 seq 值过滤：早先替换块的 seq 比它所在位置大，会夹在
   // 后续区间中间。值过滤会把它漏掉，而宿主按位置判断 shadowedSeqs，报 missing。
-  const startIdx = nodes.indexOf(startSeq);
-  let endIdx = nodes.indexOf(replaced.at(-1).seq);
+  const startIdx = nodes.indexOf(fromSeq);
+  let endIdx = nodes.indexOf(toSeq);
   if (startIdx < 0 || endIdx < startIdx) return false;
   // 遮蔽区间不能切在 assistant 消息和它的 tool/call 之间：消息被换掉、
   // tool/call 还留在表面上，后端会收到没有对应调用的 tool 结果
@@ -348,7 +349,7 @@ export function applyReplacement(session, replaced, text, sid) {
     endIdx -= 1;
     if (endIdx < startIdx) return false;
   }
-  const endSeq = nodes[endIdx];
+  const lastSeq = nodes[endIdx];
   const seqs = nodes.slice(startIdx, endIdx + 1);
   if (seqs.length === 0) return false;
   try {
@@ -364,7 +365,7 @@ export function applyReplacement(session, replaced, text, sid) {
         // 缺 source 会让整个会话加载时报 `Cannot read properties of undefined`。
         source: { kind: 'context-replacement' },
       },
-      { surfaceOp: { op: 'replace', startSeq, endSeq }, sourceEventSeqs: seqs },
+      { surfaceOp: { op: 'replace', startSeq: fromSeq, endSeq: lastSeq }, sourceEventSeqs: seqs },
     );
     return true;
   } catch {
@@ -402,11 +403,33 @@ export function planShadowV2(
   if (mode === 'off') return null;
   let replaced;
   let kept;
+  let rangeStart = null;
+  let rangeEnd = null;
+  let covered = null;
   if (mode === 'full') {
     // 完全替换：不等条数/字数门槛，最近 FULL_KEEP_TAIL 条之外全换。
     // 必须留当前轮原文，否则模型看不到你刚说的话。
     if (entries.length <= FULL_KEEP_TAIL) return null;
-    replaced = entries.slice(0, entries.length - FULL_KEEP_TAIL);
+    // 区间必须从 surface 第一个节点算起，而不是第一条「没被换过的消息」。
+    // 旧替换块在 surface 上是一条 user/message；区间不包住它，每轮都会在
+    // 它后面再插一块，块数随轮数线性涨，窗口永远不收窄。
+    const keepSeqs = new Set(entries.slice(-FULL_KEEP_TAIL).map((entry) => entry.seq));
+    const nodes = Array.isArray(session?.surface?.nodes)
+      ? session.surface.nodes.filter((seq) => seq !== 0)
+      : [];
+    const cutIndex = nodes.findIndex((seq) => keepSeqs.has(seq));
+    if (cutIndex <= 0) return null;
+    covered = nodes.slice(0, cutIndex);
+    rangeStart = covered[0];
+    rangeEnd = covered.at(-1);
+    // 旧替换块盖住的原文已经离开 surface，只有 turns 还留着；从 turns 取
+    // 原文重算，别把替换块再压一遍。
+    const originals = db
+      .prepare(
+        "SELECT seq, role, text FROM turns WHERE sid = ? AND origin = 'chat' AND seq < ? ORDER BY seq",
+      )
+      .all(sid, rangeEnd);
+    replaced = originals.length > 0 ? originals : entries.slice(0, entries.length - FULL_KEEP_TAIL);
     kept = entries.slice(entries.length - FULL_KEEP_TAIL);
   } else if (roll) {
     if (entries.length <= MIN_ENTRIES) return null;
@@ -428,8 +451,8 @@ export function planShadowV2(
   }
   if (replaced.length === 0) return null;
   const cwd = typeof session?.header?.cwd === 'string' ? session.header.cwd : '';
-  const rangeStart = replaced[0].seq;
-  const rangeEnd = replaced.at(-1).seq;
+  rangeStart = rangeStart ?? replaced[0].seq;
+  rangeEnd = rangeEnd ?? replaced.at(-1).seq;
   // 同一区间不重复记账：每轮都会重算，但被换的窗口没动就没新信息。
   // 上一次 apply 失败（applied=0）时允许重试，否则一次微任务失败会让
   // 这段永远停在原文。
@@ -461,7 +484,7 @@ export function planShadowV2(
     t: now,
     rangeStart,
     rangeEnd,
-    seqs: JSON.stringify(replaced.map((entry) => entry.seq)),
+    seqs: JSON.stringify(covered ?? replaced.map((entry) => entry.seq)),
     text,
     charsBefore,
     charsAfter: text.length,
@@ -481,7 +504,7 @@ export function planShadowV2(
     try {
       // 判据：换完变长变短都换——替换文本是接续用的缓存，不是压缩。
       // 冷却已在记账前挡掉，这里只试一次；失败留 applied=0，下一轮重试。
-      if (applyReplacement(session, replaced, text, sid)) {
+      if (applyReplacement(session, replaced, text, sid, { startSeq: rangeStart, endSeq: rangeEnd })) {
         db.prepare('UPDATE shadow_v2 SET applied = 1 WHERE id = ?').run(Number(info.lastInsertRowid));
       }
     } catch {

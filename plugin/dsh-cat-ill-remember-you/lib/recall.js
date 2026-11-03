@@ -201,10 +201,14 @@ export async function retrieve(
     recent = [],
     now = Date.now(),
     cwd = '',
+    referralText = null,
     vector = process.env.DSH_MEMORY_CORE_VECTOR !== 'off',
   } = {},
 ) {
   const query = queryOf(text);
+  // 栈文本也拼进了检索句，但「这一句里有没有指代」要按用户原话判断：
+  // 混着栈看，referral 几乎每轮都真，L3 的原文扫描就会每轮都跑。
+  if (referralText != null) query.referral = REFERRAL.test(referralText);
   const known = knownOf(recent);
   const seen = new Set();
   const hits = [];

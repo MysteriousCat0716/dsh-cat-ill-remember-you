@@ -101,11 +101,12 @@ export function ingestEvent(db, session, event) {
   const sid = String(session?.id ?? 'unknown');
   const seq = finiteNumber(event.seq, 0);
   const t = finiteNumber(event.time, Date.now());
+  const origin = role === 'user' ? originOf(message) : 'chat';
   const inserted = insertTurn(db, {
     sid,
     seq,
     role,
-    origin: role === 'user' ? originOf(message) : 'chat',
+    origin,
     // 只认可信的工作区字段；两个来源都没有就留空——空 cwd 表示「归属未知」，
     // 不靠目录名或 sid 反推（反推出来的是错误归属，比接不上更糟）。
     cwd:
@@ -117,7 +118,9 @@ export function ingestEvent(db, session, event) {
     text,
     t,
   });
-  if (inserted > 0) {
+  // 只有对话行才进栈：im/unknown 来源的行在 readStack 里 JOIN 不到角色和
+  // 正文，会渲染成空行，还占「最近几条原文」的名额。
+  if (inserted > 0 && origin === 'chat') {
     // 每一句人话入栈；超过容量时最早的一条出栈、留一份本地摘要。
     pushStack(db, { sid, seq, t });
     evictOverflow(db);

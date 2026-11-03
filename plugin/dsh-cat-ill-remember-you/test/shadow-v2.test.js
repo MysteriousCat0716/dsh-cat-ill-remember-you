@@ -250,6 +250,45 @@ test('planShadowV2: sid:full 会话只有 3 条时也换（不等 11 条门槛�
   }
 });
 
+test('planShadowV2: full 第二轮把旧替换块包进区间，原文从 turns 取', () => {
+  const db = openStore(':memory:');
+  // 第一轮之后的表面：旧替换块（seq 13）排在位置 1，后面 5..12 是从没被换过的原文。
+  const entries = [
+    [13, 'user', '[上下文替换｜旧消息压缩，非用户发言] 更早 4 条（seq 1-4），原文在本地：…'],
+    ...textEntries('消息', 12).filter(([seq]) => seq >= 5),
+  ];
+  const session = fakeSession(entries, 'sid-full-2');
+  // turns 里留着 1..12 的原文：旧块盖住的 1..4 已经离开 surface，只有这里能找回来。
+  const insert = db.prepare(
+    'INSERT INTO turns (sid, seq, role, origin, cwd, text, t) VALUES (?,?,?,?,?,?,?)',
+  );
+  for (let seq = 1; seq <= 12; seq += 1) {
+    insert.run(
+      'sid-full-2',
+      seq,
+      seq % 2 === 0 ? 'assistant' : 'user',
+      'chat',
+      '/w',
+      `消息 第 ${seq} 条`,
+      seq,
+    );
+  }
+  const restore = useWhitelist(['sid-full-2:full']);
+  try {
+    const plan = planShadowV2(session, db, { now: 1 });
+    assert.ok(plan);
+    // 区间从第一个 surface 节点起（含旧块），否则每轮都会在旧块后面再插一块。
+    assert.equal(plan.rangeStart, 13);
+    assert.equal(plan.rangeEnd, 10);
+    assert.equal(plan.kept, 2);
+    // 旧块盖住的第 1 条只能从 turns 重算进来。
+    assert.match(plan.text, /第 1 条/);
+  } finally {
+    restore();
+    db.close();
+  }
+});
+
 test('planShadowV2: 字数超预算时条数不够也换（只换得动最早那段）', () => {
   const db = openStore(':memory:');
   const long = Array.from({ length: 8 }, (_, i) => [
