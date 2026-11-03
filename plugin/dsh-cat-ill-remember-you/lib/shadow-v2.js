@@ -38,6 +38,9 @@ export const ROLL_SOFT_BUDGET = 6000;
 // 每次只动 4 条，冷却可以比「一次换一大段」短。
 export const ROLL_COOLDOWN_MS = 60 * 1000;
 
+/** full 模式只留最后这几条原文（当前轮）；更早的全部换掉。 */
+export const FULL_KEEP_TAIL = 2;
+
 // 同一个区间只允许一个替换在途：记账那一行要等微任务里的 append 成功才
 // 标 applied=1，这期间同区间再评估一次会重复排队。用内存锁挡住。
 const pending = new Set();
@@ -392,7 +395,6 @@ export function planShadowV2(
   } = {},
 ) {
   const entries = surfaceMessages(session);
-  if (entries.length <= MIN_ENTRIES) return null;
   const sid = String(session?.id ?? session?.sessionId ?? 'unknown');
   // 白名单外不记账：这些会话不会真替换，账本只会随宿主压缩反复增行。
   // 「只看会怎么换」的推演也放进白名单会话里做，别让它变成噪音。
@@ -400,16 +402,22 @@ export function planShadowV2(
   if (mode === 'off') return null;
   let replaced;
   let kept;
-  if (roll) {
+  if (mode === 'full') {
+    // 完全替换：不等条数/字数门槛，最近 FULL_KEEP_TAIL 条之外全换。
+    // 必须留当前轮原文，否则模型看不到你刚说的话。
+    if (entries.length <= FULL_KEEP_TAIL) return null;
+    replaced = entries.slice(0, entries.length - FULL_KEEP_TAIL);
+    kept = entries.slice(entries.length - FULL_KEEP_TAIL);
+  } else if (roll) {
+    if (entries.length <= MIN_ENTRIES) return null;
     // 滚动模式：只动最早 STEP 条，最近 KEEP_TAIL 条永远是原文。
     if (entries.length <= ROLL_KEEP_TAIL) return null;
     const totalChars = entries.reduce((total, entry) => total + entry.text.length, 0);
     const overCount = entries.length > ROLL_KEEP_TAIL + ROLL_STEP;
     if (!overCount && totalChars <= ROLL_SOFT_BUDGET) return null;
     const early = entries.slice(0, entries.length - ROLL_KEEP_TAIL);
-    // full：一次换掉全部旧历史（最近 KEEP_TAIL 条仍留原文）；roll：每轮只换最早 STEP 条。
-    replaced = mode === 'full' ? early : early.slice(0, ROLL_STEP);
-    kept = [...(mode === 'full' ? [] : early.slice(ROLL_STEP)), ...entries.slice(entries.length - ROLL_KEEP_TAIL)];
+    replaced = early.slice(0, ROLL_STEP);
+    kept = [...early.slice(ROLL_STEP), ...entries.slice(entries.length - ROLL_KEEP_TAIL)];
   } else {
     // 旧逻辑兜底：按比例保留，一次换掉更早的一段。
     const keepCount = resolveKeep(entries.length, keep);
@@ -444,8 +452,9 @@ export function planShadowV2(
   const recent = db
     .prepare('SELECT t FROM shadow_v2 WHERE sid = ? AND applied = 1 ORDER BY id DESC LIMIT 1')
     .get(sid);
-  const cooldown = roll ? ROLL_COOLDOWN_MS : REPLACE_COOLDOWN_MS;
-  if (recent && now - recent.t < cooldown) return null;
+  // full 模式不设冷却：要的就是每轮都把可换的旧历史换掉。
+  const cooldown = mode === 'full' ? 0 : roll ? ROLL_COOLDOWN_MS : REPLACE_COOLDOWN_MS;
+  if (recent && cooldown > 0 && now - recent.t < cooldown) return null;
   const row = {
     sid,
     turn: 0,

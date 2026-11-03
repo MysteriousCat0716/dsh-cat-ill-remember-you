@@ -218,7 +218,7 @@ test('planShadowV2: 滚动模式只换最早 4 条，最近 6 条原文不动', 
   db.close();
 });
 
-test('planShadowV2: 白名单 sid:full 一次换掉全部旧历史，只留最近 6 条原文', () => {
+test('planShadowV2: 白名单 sid:full 不等门槛，除最近 2 条外全部进替换', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 12), 'sid-full');
   const restore = useWhitelist(['sid-full:full']);
@@ -226,8 +226,24 @@ test('planShadowV2: 白名单 sid:full 一次换掉全部旧历史，只留最�
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan);
     assert.equal(plan.rangeStart, 1);
-    assert.equal(plan.rangeEnd, 6); // 12 条 - 最近 6 条 = 6 条全部进替换
-    assert.equal(plan.kept, 6);
+    assert.equal(plan.rangeEnd, 10); // 12 条 - 当前轮 2 条 = 10 条全部进替换
+    assert.equal(plan.kept, 2);
+  } finally {
+    restore();
+    db.close();
+  }
+});
+
+test('planShadowV2: sid:full 会话只有 3 条时也换（不等 11 条门槛）', () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 3), 'sid-full-small');
+  const restore = useWhitelist(['sid-full-small:full']);
+  try {
+    const plan = planShadowV2(session, db, { now: 1 });
+    assert.ok(plan);
+    assert.equal(plan.rangeStart, 1);
+    assert.equal(plan.rangeEnd, 1);
+    assert.equal(plan.kept, 2);
   } finally {
     restore();
     db.close();
