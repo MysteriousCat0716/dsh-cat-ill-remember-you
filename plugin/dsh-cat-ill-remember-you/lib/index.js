@@ -7,7 +7,7 @@ import { refine } from './extract.js';
 import { ingestEvent, textOf } from './ingest.js';
 import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
-import { planShadowV2 } from './shadow-v2.js';
+import { planShadowV2, replaceMode } from './shadow-v2.js';
 import { planCarry, setCarryLogger } from './carry.js';
 import { renderStack } from './context-stack.js';
 import { setOriginalsLogger } from './originals.js';
@@ -219,11 +219,14 @@ export function apply(ctx) {
       }
 
       // 全局栈：跨会话按时间取最近几条，作为替换上下文（指针在栈里，正文现查）。
+      // 只对白名单会话生效，别把测试用的上下文塞进普通会话。
       try {
-        const stacked = renderStack(db);
-        if (stacked) {
-          hintParts.push(stacked);
-          log(`stack chars=${stacked.length}`);
+        if (replaceMode(sid) !== 'off') {
+          const stacked = renderStack(db);
+          if (stacked) {
+            hintParts.push(stacked);
+            log(`stack chars=${stacked.length}`);
+          }
         }
       } catch (error) {
         log(`stack failed: ${error?.message ?? error}`);
