@@ -103,7 +103,10 @@ async function runPreStep({ turn, messages, cwd = '/proj', memory = null, histor
   const harness = fakeCtx(cwd, history);
   try {
     apply(harness.ctx);
-    const decision = { messages: [...messages] };
+    const decision = {
+      messages: [...messages],
+      assembly: { sections: [], contexts: [], tools: [], variables: {} },
+    };
     const result = await harness.fire(
       'agent/pre-step',
       { agent: { id: 'new-session' }, messages: decision.messages, step: 1, turn },
@@ -125,12 +128,13 @@ const userMessage = (text) => ({ role: 'user', content: [{ type: 'text', text }]
 
 test('pre-step: 第一轮注入上一个会话的最后缓存', async () => {
   const { decision: result } = await runPreStep({ turn: 1, messages: [userMessage('我回来了')] });
-  const injected = result.messages.filter((message) => message.source?.kind === 'memory-core');
+  const injected = result.assembly.contexts.filter((context) => context.name === 'memory-core');
   assert.equal(injected.length, 1);
-  assert.ok(injected[0].content[0].text.startsWith(LAST_SESSION_MARK));
-  assert.ok(injected[0].content[0].text.includes('把 carry.js 接进 pre-step'));
-  // 原消息还在，注入是追加。
+  assert.ok(injected[0].text.startsWith(LAST_SESSION_MARK));
+  assert.ok(injected[0].text.includes('把 carry.js 接进 pre-step'));
+  // 记忆块走 assembly.contexts，不再混进 decision.messages——那是用户消息。
   assert.equal(result.messages.filter((message) => message.source?.kind === 'user').length, 1);
+  assert.equal(result.messages.filter((message) => message.source?.kind === 'memory-core').length, 0);
 });
 
 test('pre-step: 聊过的会话也会接上（每轮接续，不再只看第一轮）', async () => {
@@ -143,9 +147,9 @@ test('pre-step: 聊过的会话也会接上（每轮接续，不再只看第一�
       [3, 'user', '继续'],
     ],
   });
-  const injected = result.messages.filter((message) => message.source?.kind === 'memory-core');
+  const injected = result.assembly.contexts.filter((context) => context.name === 'memory-core');
   assert.equal(injected.length, 1);
-  assert.ok(injected[0].content[0].text.startsWith(LAST_SESSION_MARK));
+  assert.ok(injected[0].text.startsWith(LAST_SESSION_MARK));
 });
 
 test('pre-step: 历史里有旧标记时，新的接续仍然注入（去重靠 carry_log）', async () => {
@@ -154,9 +158,9 @@ test('pre-step: 历史里有旧标记时，新的接续仍然注入（去重靠 
     messages: [userMessage('我回来了')],
     history: [[1, 'user', `${LAST_SESSION_MARK} 上一轮已注入`, { kind: 'memory-core' }]],
   });
-  const injected = result.messages.filter((message) => message.source?.kind === 'memory-core');
+  const injected = result.assembly.contexts.filter((context) => context.name === 'memory-core');
   assert.equal(injected.length, 1);
-  assert.ok(injected[0].content[0].text.startsWith(LAST_SESSION_MARK));
+  assert.ok(injected[0].text.startsWith(LAST_SESSION_MARK));
 });
 
 test('pre-step: 有取回命中时 recall_log 落账（不因 turnNo 漏定义而静默失败）', async () => {
@@ -170,7 +174,8 @@ test('pre-step: 有取回命中时 recall_log 落账（不因 turnNo 漏定义�
     },
   });
   assert.ok(recallCount > 0, 'recall_log 应写入命中记录');
-  const hints = result.messages.filter((message) => message.source?.kind === 'memory-core');
-  assert.ok(hints.length >= 2, '接续缓存与取回提示应各有一条');
-  assert.ok(hints.some((message) => !message.content[0].text.startsWith(LAST_SESSION_MARK)));
+  const hints = result.assembly.contexts.filter((context) => context.name === 'memory-core');
+  assert.equal(hints.length, 1, '接续与取回合并成一条 runtime context');
+  assert.ok(hints[0].text.startsWith(LAST_SESSION_MARK));
+  assert.ok(hints[0].text.includes('carry.js 判据：看会话历史'));
 });

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,16 +17,6 @@ import { embedPending } from './embed.js';
 export const name = 'dsh-cat-ill-remember-you';
 
 export const inject = ['sessions'];
-
-/** The injected hint is a user message with a non-user source, so ingest skips it. */
-function hintMessage(text) {
-  return Object.freeze({
-    id: randomUUID(),
-    role: 'user',
-    content: [{ type: 'text', text }],
-    source: { kind: 'memory-core', form: 'notice', summary: '记忆' },
-  });
-}
 
 /** Last human input of the turn; skips runtime-context and plugin notices. */
 function lastUserText(messages) {
@@ -158,9 +147,14 @@ export function apply(ctx) {
     }
   });
 
-  // M2：每轮第一个 step 之前取回，注入一条带门槛的提示。
-  // 写不出 why 的候选在 retrieve() 里已被丢弃；注入消息带 memory-core 来源，
-  // 不会被 M0 的 ingest 当成他的话再收一遍。
+  // M2：每轮第一个 step 之前取回，把接续/取回文本挂到 assembly.contexts。
+  // 不能塞 decision.messages：宿主 step() 会把每条非 runtime-context 的
+  // decision.messages append 成 user/message（dsh-agent-loop step() 的
+  // firstAttempt 循环）——记忆块会变成猫自己说的话，显示在气泡里、进 surface。
+  // assembly.contexts 是宿主的动态上下文通道：renderContextSections 会把它
+  // 合进 runtime-context 快照（source.kind === 'runtime-context'），UI 按
+  // runtime context 渲染，不会冒充用户消息；refreshContext 对没有注册 provider
+  // 的 accepted 项原样保留，所以这一步挂上去的文本本轮就能生效。
   ctx.on('agent/pre-step', async ({ agent, messages, signal, step, turn }, next) => {
     const decision = await next();
     if (!decision || typeof decision !== 'object') {
@@ -177,7 +171,7 @@ export function apply(ctx) {
       const db = currentStore();
       if (!db) return decision;
       const sid = String(agent?.id ?? '');
-      const extra = [];
+      const hintParts = [];
       // 只用于记账：pre-step 的 turn 是进程内轮次，不参与「是不是新会话」的判断。
       const turnNo = Number(turn) > 0 ? Number(turn) : 0;
 
@@ -194,7 +188,7 @@ export function apply(ctx) {
       try {
         const carry = planCarry(db, { cwd, sid, session, messages: decision.messages });
         if (carry) {
-          extra.push(hintMessage(carry));
+          hintParts.push(carry);
           log(`carry chars=${carry.length} cwd=${cwd}`);
         }
       } catch (error) {
@@ -248,11 +242,28 @@ export function apply(ctx) {
           } catch (error) {
             log(`shadow failed: ${error?.message ?? error}`);
           }
-          extra.push(hintMessage(text));
+          hintParts.push(text);
         }
       }
-      if (extra.length === 0) return decision;
-      return { ...decision, messages: [...decision.messages, ...extra] };
+      if (hintParts.length === 0) return decision;
+      const assembly = decision.assembly;
+      if (!assembly || !Array.isArray(assembly.contexts)) {
+        log('pre-step: decision.assembly.contexts missing, skip injection');
+        return decision;
+      }
+      // 没有注册 provider 的 accepted 项会在 refreshContext 里原样保留；
+      // 挂上本轮文本，step() 的 renderContextSections 会把它合进
+      // runtime-context 快照，而不是 append 成 user/message。
+      return {
+        ...decision,
+        assembly: {
+          ...assembly,
+          contexts: [
+            ...assembly.contexts,
+            { name: 'memory-core', text: hintParts.join('\n\n'), interpolate: false },
+          ],
+        },
+      };
     } catch (error) {
       log(`recall failed: ${error?.message ?? error}`);
       return decision;
