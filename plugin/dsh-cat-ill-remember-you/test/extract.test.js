@@ -214,3 +214,22 @@ test('entitiesOf: 驼峰词和「X：」定义句都抽得到，模板词不进 
   assert.ok(names.includes('木兰'));
   assert.ok(!names.includes('结论'));
 });
+
+test('refine: 明确改口时记 supersedes 链，旧条仍 active', () => {
+  const db = openStore(':memory:');
+  const old = db
+    .prepare(
+      `INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, t)
+       VALUES ('decision', 'chat', 'user', 'FastAPI 用 Express 风格的路由。', 'FastAPI 路由', '["FastAPI"]', '[]', '旧的', 'active', 1000)`,
+    )
+    .run();
+  const oldId = Number(old.lastInsertRowid);
+  insertTurn(db, { sid: 's1', seq: 1, role: 'user', text: '不再用 Express 了，改成 FastAPI 原生路由。', t: 2000 });
+  insertTurn(db, { sid: 's1', seq: 2, role: 'assistant', text: '好。', t: 2001 });
+  refine(db);
+  const fresh = db.prepare('SELECT supersedes FROM memories WHERE id > ?').get(oldId);
+  assert.equal(fresh.supersedes, oldId);
+  const before = db.prepare('SELECT tier FROM memories WHERE id = ?').get(oldId);
+  assert.equal(before.tier, 'active', '旧条不降级，等 used 数据说话');
+  db.close();
+});

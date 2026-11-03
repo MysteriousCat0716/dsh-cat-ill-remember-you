@@ -237,12 +237,54 @@ function upsertEntities(db, names, t) {
   for (const name of names) stmt.run(name, t);
 }
 
+
+/**
+ * 改主意的时候记一条链，不改旧条的 tier。
+ *
+ * 评审建议「反驳词命中就把旧条标 superseded」，但反驳词表太粗——
+ * 「不」几乎每句都有，自动降级会把大量还在用的记忆埋掉。这里只做
+ * 两件保守的事：词表窄到「改成/不再/反过来/错了」这类明确改口，
+ * 且要求实体有交集；命中只写 supersedes 指针，旧条保持 active。
+ * 等 used 数据能看出「旧条还在被取回」时，再决定要不要降级。
+ */
+const SUPERSEDE_CUE = /(改成|不再|反过来|错了|其实不|换一种|不这样)/;
+
+function namesOf(raw) {
+  try {
+    const list = JSON.parse(String(raw ?? '[]'));
+    return Array.isArray(list) ? list.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function supersedesFor(db, item) {
+  const text = String(item.text ?? '');
+  if (!SUPERSEDE_CUE.test(text)) return null;
+  const entities = Array.isArray(item.entities) ? item.entities : [];
+  if (entities.length === 0) return null;
+  const rows = db
+    .prepare(
+      `SELECT id, entities FROM memories
+       WHERE kind = ? AND tier = 'active' AND origin = 'chat'
+       ORDER BY t DESC LIMIT 30`,
+    )
+    .all(item.kind);
+  for (const row of rows) {
+    const old = namesOf(row.entities);
+    if (old.some((name) => entities.includes(name))) return row.id;
+  }
+  return null;
+}
+
 /** @param {DatabaseSync} db */
 function insertMemory(db, item) {
   const stmt = db.prepare(
     'INSERT INTO memories (kind, origin, subject, text, summary, entities, anchors, why, tier, retention, t, source_sid, source_seq, confidence, supersedes, rule_ver) ' +
       'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
+  // 只在明确改口时记链；旧条不降级，等 used 数据说话。
+  const supersedes = item.supersedes ?? supersedesFor(db, item);
   const result = stmt.run(
     item.kind,
     item.origin ?? 'chat',
@@ -258,7 +300,7 @@ function insertMemory(db, item) {
     item.source_sid,
     item.source_seq,
     item.confidence ?? 'explicit',
-    item.supersedes ?? null,
+    supersedes,
     item.rule_ver ?? RULE_VER,
   );
   return Number(result.lastInsertRowid ?? 0);
