@@ -468,3 +468,29 @@ test('retrieve: 弱匹配按稀有词选，不按新旧选', async () => {
   assert.equal(hits[0].summary, '幂等操作');
   db.close();
 });
+
+test('retrieve: permanent 的记忆不被更近的条目挤掉', async () => {
+  const db = openStore(':memory:');
+  const insert = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, retention, t)
+     VALUES ('fact', ?, ?, '[]', ?, '规则提炼：fact', 'active', ?, ?)`,
+  );
+  // 旧的那条是「钉子」，新的那条只是普通记忆；按时间排会选中新的。
+  insert.run(
+    'lib/recall.js 的钉子条目。',
+    '钉子条目（旧）',
+    JSON.stringify(['lib/recall.js']),
+    'permanent',
+    1000,
+  );
+  insert.run(
+    'lib/recall.js 的新条目。',
+    '新条目（新）',
+    JSON.stringify(['lib/recall.js']),
+    'auto',
+    2000,
+  );
+  const hits = await retrieve(db, { text: 'lib/recall.js 现在怎么改', recent: [], now: 3000 });
+  assert.equal(hits[0].summary, '钉子条目（旧）');
+  db.close();
+});

@@ -165,6 +165,7 @@ function rowToItem(row, source) {
     why: '',
     scene: sceneOf(row.why),
     confidence: row.confidence ?? 'explicit',
+    retention: row.retention ?? 'auto',
   };
 }
 
@@ -175,7 +176,7 @@ function rowToItem(row, source) {
 function personaOf(db) {
   const rows = db
     .prepare(
-      `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
+      `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
        WHERE tier = 'active' AND origin = 'chat' AND kind IN ('preference', 'decision')
        ORDER BY t DESC LIMIT 100`,
     )
@@ -280,6 +281,8 @@ function scoreOf(item, query, db) {
   let score = 0;
   for (const value of item.anchors) if (query.anchors.includes(value)) score += 2 * weightOf(db, value);
   for (const value of item.entities) if (query.entities.includes(value)) score += weightOf(db, value);
+  // 「钉子」：显式 permanent 的记忆不靠时间赢，也不该被更近的条目挤掉。
+  if (item.retention === 'permanent') score += 2;
   return score;
 }
 
@@ -358,7 +361,7 @@ export async function retrieve(
     const marks = query.entities.map(() => '?').join(',');
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
          WHERE tier = 'active' AND origin = 'chat'
            AND EXISTS (SELECT 1 FROM json_each(memories.entities) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
@@ -389,7 +392,7 @@ export async function retrieve(
     const marks = toolAnchors.map(() => '?').join(',');
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
          WHERE tier = 'active' AND origin = 'chat'
            AND EXISTS (SELECT 1 FROM json_each(memories.anchors) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
@@ -417,7 +420,7 @@ export async function retrieve(
   // L1: the newest three distilled memories double as the sliding cache.
   const cacheRows = db
     .prepare(
-      `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
+      `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
        WHERE tier = 'active' AND origin = 'chat' ORDER BY t DESC LIMIT ?`,
     )
     .all(CACHE_SIZE);
@@ -448,7 +451,7 @@ export async function retrieve(
   if (clauses.length) {
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
          WHERE tier IN ('active','dormant') AND origin = 'chat' AND (${clauses.join(' OR ')})
          ORDER BY t DESC LIMIT 24`,
       )
@@ -490,7 +493,7 @@ export async function retrieve(
           }
           const row = db
             .prepare(
-              `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
+              `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
                WHERE id = ? AND tier IN ('active','dormant') AND origin = 'chat'`,
             )
             .get(candidate.memory_id);
@@ -522,7 +525,7 @@ export async function retrieve(
       const values = terms.map((term) => `%${escapeLike(term)}%`);
       const rows = db
         .prepare(
-          `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
+          `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
            WHERE tier = 'active' AND origin = 'chat' AND (${like})
            ORDER BY t DESC LIMIT 10`,
         )
