@@ -1,4 +1,5 @@
 import { insertTurn } from './db.js';
+import { evictOverflow, pushStack } from './context-stack.js';
 
 /** Fallback filter for old events that carry no `source` field. */
 export const INJECT_RE =
@@ -97,9 +98,12 @@ export function ingestEvent(db, session, event) {
 
   const headerCwd = session?.header?.cwd;
   const sessionCwd = session?.cwd;
-  return insertTurn(db, {
-    sid: String(session?.id ?? 'unknown'),
-    seq: finiteNumber(event.seq, 0),
+  const sid = String(session?.id ?? 'unknown');
+  const seq = finiteNumber(event.seq, 0);
+  const t = finiteNumber(event.time, Date.now());
+  const inserted = insertTurn(db, {
+    sid,
+    seq,
     role,
     origin: role === 'user' ? originOf(message) : 'chat',
     // 只认可信的工作区字段；两个来源都没有就留空——空 cwd 表示「归属未知」，
@@ -111,6 +115,12 @@ export function ingestEvent(db, session, event) {
           ? sessionCwd
           : '',
     text,
-    t: finiteNumber(event.time, Date.now()),
+    t,
   });
+  if (inserted > 0) {
+    // 每一句人话入栈；超过容量时最早的一条出栈、留一份本地摘要。
+    pushStack(db, { sid, seq, t });
+    evictOverflow(db);
+  }
+  return inserted;
 }

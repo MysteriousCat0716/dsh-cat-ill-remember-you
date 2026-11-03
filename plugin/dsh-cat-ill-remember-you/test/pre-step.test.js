@@ -73,12 +73,15 @@ async function runPreStep({ turn, messages, cwd = '/proj', memory = null, histor
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stack-pre-step-'));
   const file = path.join(dir, 'memory.db');
   const seed = openStore(file);
-  // 全局栈读的是 turns 表，种一条别的会话的原文，验证它会进注入块。
+  // 全局栈只认 context_stack 里的指针；种一条别的会话的原文 + 指针，验证它会进注入块。
   seed
     .prepare(
       `INSERT INTO turns (sid, seq, role, origin, cwd, text, t) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run('old-session', 1, 'user', 'chat', cwd, '上次停在：把 stack 接进 pre-step', Date.now() - 60_000);
+  seed
+    .prepare(`INSERT INTO context_stack (sid, seq, t) VALUES (?, ?, ?)`)
+    .run('old-session', 1, Date.now() - 60_000);
   if (memory) {
     seed
       .prepare(

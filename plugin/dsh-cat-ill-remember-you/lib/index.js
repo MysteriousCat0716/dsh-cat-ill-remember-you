@@ -8,7 +8,7 @@ import { ingestEvent, textOf } from './ingest.js';
 import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { planShadowV2, replaceMode } from './shadow-v2.js';
-import { renderStack } from './context-stack.js';
+import { backfillStack, renderStack } from './context-stack.js';
 import { setOriginalsLogger } from './originals.js';
 import { backfillTurnCwd } from './backfill.js';
 import { forgetSweep } from './forget.js';
@@ -109,6 +109,13 @@ export function apply(ctx) {
         if (filled > 0) log(`turn cwd backfill: ${filled} rows`);
       } catch (error) {
         log(`turn cwd backfill failed: ${error?.message ?? error}`);
+      }
+      // 首次启用全局栈时用 turns 最近的历史铺一次；之后靠 ingest 入栈。
+      try {
+        const stacked = backfillStack(store);
+        if (stacked > 0) log(`stack backfill: ${stacked} rows`);
+      } catch (error) {
+        log(`stack backfill failed: ${error?.message ?? error}`);
       }
       return store;
     } catch (error) {

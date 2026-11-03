@@ -2,9 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openStore } from '../lib/db.js';
-import { readStack, renderStack } from '../lib/context-stack.js';
+import { evictOverflow, pushStack, readStack, renderStack } from '../lib/context-stack.js';
 
-function insertTurn(db, { sid, seq, role, text, t }) {
+function insertTurn(db, { sid, seq, role = 'user', text, t = 1000 }) {
   db.prepare(
     `INSERT OR IGNORE INTO turns (sid, seq, role, origin, cwd, text, t) VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(sid, seq, role, 'chat', '', text, t);
@@ -12,8 +12,10 @@ function insertTurn(db, { sid, seq, role, text, t }) {
 
 test('readStack: 跨会话按时间倒序取最近 N 条', () => {
   const db = openStore(':memory:');
-  insertTurn(db, { sid: 's-a', seq: 1, role: 'user', text: '会话一的话', t: 1000 });
-  insertTurn(db, { sid: 's-b', seq: 1, role: 'user', text: '会话二的话', t: 2000 });
+  insertTurn(db, { sid: 's-a', seq: 1, text: '会话一的话', t: 1000 });
+  insertTurn(db, { sid: 's-b', seq: 1, text: '会话二的话', t: 2000 });
+  pushStack(db, { sid: 's-a', seq: 1, t: 1000 });
+  pushStack(db, { sid: 's-b', seq: 1, t: 2000 });
   const rows = readStack(db, { limit: 10 });
   assert.equal(rows.length, 2);
   assert.equal(rows[0].sid, 's-b');
@@ -21,30 +23,29 @@ test('readStack: 跨会话按时间倒序取最近 N 条', () => {
   db.close();
 });
 
-test('renderStack: 最近几条用原文，更早的用缓存摘要', () => {
+test('evictOverflow: 超过容量时最早的出栈并留下摘要', () => {
   const db = openStore(':memory:');
-  insertTurn(db, { sid: 's-old', seq: 1, role: 'user', text: '很久以前那句原文', t: 1000 });
-  insertTurn(db, { sid: 's-new', seq: 1, role: 'user', text: '刚刚那句原文', t: 2000 });
-  db.prepare(
-    `INSERT INTO shadow_v2
-       (sid, turn, t, range_start, range_end, seqs, text, chars_before, chars_after, kept, lost_ratio, dangling, applied, cwd)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run('s-old', 0, 1, 1, 1, '[1]', '[上下文替换] 旧话的摘要缓存', 10, 12, 1, 0, 0, 1, '');
+  insertTurn(db, { sid: 's-a', seq: 1, text: '最早的那句话', t: 1000 });
+  insertTurn(db, { sid: 's-b', seq: 1, text: '第二句话', t: 2000 });
+  insertTurn(db, { sid: 's-c', seq: 1, text: '第三句话', t: 3000 });
+  pushStack(db, { sid: 's-a', seq: 1, t: 1000 });
+  pushStack(db, { sid: 's-b', seq: 1, t: 2000 });
+  pushStack(db, { sid: 's-c', seq: 1, t: 3000 });
+  assert.equal(evictOverflow(db, { limit: 2 }), 1);
+  const oldest = readStack(db, { limit: 10 }).find((row) => row.sid === 's-a');
+  assert.equal(oldest.evicted, 1);
+  assert.match(oldest.summary, /最早的那句话/);
   const text = renderStack(db, { limit: 10, raw: 1 });
-  assert.match(text, /最近 2 条/);
-  assert.match(text, /刚刚那句原文/);
-  assert.match(text, /旧话的摘要缓存/);
-  assert.doesNotMatch(text, /很久以前那句原文/);
+  assert.match(text, /旧·摘要/);
+  assert.match(text, /最早的那句话/);
   db.close();
 });
 
-test('renderStack: carry 已经给过的行不再重复进栈', () => {
+test('evictOverflow 幂等：容量内重复调用不出栈', () => {
   const db = openStore(':memory:');
-  insertTurn(db, { sid: 's-a', seq: 1, role: 'user', text: 'carry 已经给过的一句', t: 1000 });
-  insertTurn(db, { sid: 's-b', seq: 1, role: 'user', text: '只有栈里有的一句', t: 2000 });
-  const text = renderStack(db, { limit: 10, raw: 10, exclude: new Set(['s-a:1']) });
-  assert.doesNotMatch(text, /carry 已经给过的一句/);
-  assert.match(text, /只有栈里有的一句/);
-  assert.match(text, /最近 1 条/);
+  insertTurn(db, { sid: 's-a', seq: 1, text: '一句', t: 1000 });
+  pushStack(db, { sid: 's-a', seq: 1, t: 1000 });
+  assert.equal(evictOverflow(db, { limit: 10 }), 0);
+  assert.equal(evictOverflow(db, { limit: 10 }), 0);
   db.close();
 });

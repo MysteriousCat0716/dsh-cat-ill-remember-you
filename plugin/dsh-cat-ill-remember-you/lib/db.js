@@ -117,6 +117,20 @@ CREATE TABLE IF NOT EXISTS shadow_v2 (
   applied      INTEGER NOT NULL DEFAULT 0,
   cwd          TEXT    NOT NULL DEFAULT ''
 );
+
+-- 全局上下文栈：只存指针（哪条会话的哪一句），正文仍在 turns。
+-- 入栈发生在 ingest；栈超过上限时最早的一条被标记 evicted 并留下一份
+-- 本地摘要，注入时用它代替原文。出栈不删任何东西。
+CREATE TABLE IF NOT EXISTS context_stack (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  sid     TEXT    NOT NULL,
+  seq     INTEGER NOT NULL,
+  t       INTEGER NOT NULL,
+  evicted INTEGER NOT NULL DEFAULT 0,
+  summary TEXT    NOT NULL DEFAULT '',
+  UNIQUE (sid, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_stack_t ON context_stack (t, id);
 `;
 
 /**
