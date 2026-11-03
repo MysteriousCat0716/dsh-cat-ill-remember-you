@@ -49,3 +49,26 @@ test('evictOverflow 幂等：容量内重复调用不出栈', () => {
   assert.equal(evictOverflow(db, { limit: 10 }), 0);
   db.close();
 });
+
+test('renderStack: 全局 20 条之外，补本会话更早的几条', () => {
+  const db = openStore(':memory:');
+  insertTurn(db, { sid: 's-me', seq: 1, text: '本会话第一句', t: 1000 });
+  insertTurn(db, { sid: 's-me', seq: 2, text: '本会话第二句', t: 1001 });
+  insertTurn(db, { sid: 's-me', seq: 3, text: '本会话第三句', t: 1002 });
+  pushStack(db, { sid: 's-me', seq: 1, t: 1000 });
+  pushStack(db, { sid: 's-me', seq: 2, t: 1001 });
+  pushStack(db, { sid: 's-me', seq: 3, t: 1002 });
+  // 别的会话占满最近 25 条，把本会话的三条挤出全局 20 条。
+  for (let index = 0; index < 25; index += 1) {
+    const sid = `s-other-${index}`;
+    insertTurn(db, { sid, seq: 1, text: `别处第${index}句`, t: 2000 + index });
+    pushStack(db, { sid, seq: 1, t: 2000 + index });
+  }
+  const text = renderStack(db, { sid: 's-me', limit: 20, localExtra: 10, raw: 0 });
+  assert.match(text, /【本会话更早】/);
+  assert.match(text, /本会话第一句/);
+  // 全局段里不该出现本会话那三条。
+  const globalPart = text.split('【本会话更早】')[0];
+  assert.doesNotMatch(globalPart, /本会话第一句/);
+  db.close();
+});

@@ -2,7 +2,13 @@
 export const STACK_MARK = '[全局上下文]';
 
 /** 栈容量：跨会话按时间保留最近这么多条指针。 */
-export const STACK_LIMIT = 20;
+export const STACK_LIMIT = 50;
+
+/** 每次注入取多少条全局指针。 */
+export const INJECT_LIMIT = 20;
+
+/** 全局之外，最多再补多少条本会话更早的指针。 */
+export const LOCAL_EXTRA = 10;
 
 /** 注入时的总字数硬顶；条数够了但太长就只取最近几条。 */
 export const STACK_MAX_CHARS = 3000;
@@ -92,14 +98,39 @@ export function readStack(db, { limit = STACK_LIMIT } = {}) {
 }
 
 /**
- * 把栈渲染成注入块：最近 raw 条用原文，出了栈的用摘要。
+ * 读本会话在栈里更早的几行（已被全局 20 条漏掉的）。
+ * 按时间取，不做语义匹配——语义要多一次 embedding，且结果不稳定。
  * @param {import('node:sqlite').DatabaseSync} db
- * @param {{limit?:number, raw?:number, rawChars?:number, oldChars?:number}} [options]
+ * @param {{sid?:string, limit?:number, exclude?:Set<string>}} [options]
+ */
+export function readLocalStack(db, { sid = '', limit = LOCAL_EXTRA, exclude = new Set() } = {}) {
+  if (!sid) return [];
+  const cap = Math.max(1, Math.floor(Number(limit) || LOCAL_EXTRA));
+  const rows = db
+    .prepare(
+      `SELECT s.sid, s.seq, s.t, s.evicted, s.summary, t.role, t.text
+       FROM context_stack s
+       LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
+       WHERE s.sid = ? AND s.evicted = 0
+       ORDER BY s.t DESC, s.id DESC
+       LIMIT ?`,
+    )
+    .all(String(sid), cap + exclude.size);
+  return rows.filter((row) => !exclude.has(`${row.sid}:${row.seq}`)).slice(0, cap);
+}
+
+/**
+ * 把栈渲染成注入块：最近 raw 条用原文，出了栈的用摘要。
+ * 全局取 limit 条；再从栈里补最多 localExtra 条本会话更早的，单列一段。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {{sid?:string, limit?:number, localExtra?:number, raw?:number, rawChars?:number, oldChars?:number, maxChars?:number}} [options]
  */
 export function renderStack(
   db,
   {
-    limit = STACK_LIMIT,
+    sid = '',
+    limit = INJECT_LIMIT,
+    localExtra = LOCAL_EXTRA,
     raw = STACK_RAW,
     rawChars = 220,
     oldChars = 140,
@@ -110,20 +141,44 @@ export function renderStack(
   if (rows.length === 0) return '';
   const out = [];
   let used = 0;
+  const push = (line) => {
+    // 最近的一条无论如何都留着；之后超字数就停，宁可少几条也不撑爆。
+    if (out.length > 0 && used + line.length > maxChars) return false;
+    out.push(line);
+    used += line.length;
+    return true;
+  };
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
     const newest = index < raw && !row.evicted;
     const who = row.role === 'user' ? '用户' : '助手';
     const text = newest ? clip(row.text, rawChars) : clip(row.summary || row.text, oldChars);
     const tag = newest ? '' : '（旧·摘要）';
-    const line = `- ${clock(row.t)} ${String(row.sid).slice(-6)} ${who}${tag}：${text}`;
-    // 最近的一条无论如何都留着；之后超字数就停，宁可少几条也不撑爆。
-    if (out.length > 0 && used + line.length > maxChars) break;
-    out.push(line);
-    used += line.length;
+    if (!push(`- ${clock(row.t)} ${String(row.sid).slice(-6)} ${who}${tag}：${text}`)) break;
   }
   const head = `${STACK_MARK} 最近 ${out.length} 条（跨会话，按时间；最近 ${Math.min(raw, out.length)} 条原文）`;
-  return `${head}\n${out.join('\n')}`;
+  const parts = [head];
+  if (out.length > 0) parts.push(out.join('\n'));
+  const local =
+    sid && localExtra > 0
+      ? readLocalStack(db, {
+          sid,
+          limit: localExtra,
+          exclude: new Set(rows.map((row) => `${row.sid}:${row.seq}`)),
+        })
+      : [];
+  if (local.length > 0) {
+    const localLines = [];
+    for (const row of local) {
+      const text = clip(row.summary || row.text, oldChars);
+      const line = `- ${clock(row.t)} ${row.role === 'user' ? '用户' : '助手'}（旧·摘要）：${text}`;
+      if (used + line.length > maxChars) break;
+      localLines.push(line);
+      used += line.length;
+    }
+    if (localLines.length > 0) parts.push('【本会话更早】', ...localLines);
+  }
+  return parts.join('\n');
 }
 
 /**

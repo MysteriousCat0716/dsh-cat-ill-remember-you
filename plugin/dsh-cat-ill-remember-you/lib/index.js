@@ -216,7 +216,7 @@ export function apply(ctx) {
       // 白名单内直接进替换流程；白名单外也注入，但只作预览——这个会话能看见
       // 「如果被替换会是什么样」，自己的历史不改。
       try {
-        const stacked = renderStack(db);
+        const stacked = renderStack(db, { sid });
         if (stacked) {
           const mode = replaceMode(sid);
           const body =
