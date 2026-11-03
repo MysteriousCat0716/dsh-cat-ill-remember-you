@@ -5,6 +5,7 @@ import path from 'node:path';
 import { openStore, pendingCount } from './db.js';
 import { refine } from './extract.js';
 import { ingestEvent, textOf } from './ingest.js';
+import { sidOf } from './sid.js';
 import { retrieve, renderHint, markRecallUsed } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { planShadowV2, replaceMode, setShadowLogger } from './shadow-v2.js';
@@ -166,8 +167,8 @@ export function apply(ctx) {
       text: (context) => {
         const agent = context?.agent;
         if (!agent) return '';
-        const hint = hintBySid.get(agent.id) ?? hintBySid.get(agent.session?.id) ?? lastHint;
-        const sid = String(agent.session?.id ?? agent.id ?? '');
+        const sid = sidOf(agent);
+        const hint = hintBySid.get(sid) ?? lastHint;
         // 契约只给走替换的会话：白名单外不改历史，也就不需要它。
         const contract = sid && replaceMode(sid) !== 'off' ? REPLACE_CONTRACT : '';
         return [contract, hint].filter(Boolean).join('\n\n');
@@ -197,7 +198,7 @@ export function apply(ctx) {
         // 之前只有「注入」这个动作被记账，没有「用了」——所有判据都缺落点。
         try {
           const used = markRecallUsed(db, {
-            sid: String(session?.id ?? session?.sessionId ?? ''),
+            sid: sidOf(session),
             text: textOf(event?.data?.message),
           });
           if (used > 0) log(`recall used=${used}`);
@@ -230,7 +231,7 @@ export function apply(ctx) {
     try {
       const db = currentStore();
       if (!db) return decision;
-      const sid = String(agent?.id ?? '');
+      const sid = sidOf(agent);
       const hintParts = [];
       // 只用于记账：pre-step 的 turn 是进程内轮次，不参与「是不是新会话」的判断。
       const turnNo = Number(turn) > 0 ? Number(turn) : 0;

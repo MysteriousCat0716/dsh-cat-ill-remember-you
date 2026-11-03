@@ -13,6 +13,7 @@
 
 import { anchorsOf, entitiesOf } from './extract.js';
 import { INJECT_RE } from './ingest.js';
+import { sidOf } from './sid.js';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -496,7 +497,7 @@ export function planShadowV2(
   } = {},
 ) {
   const entries = surfaceMessages(session);
-  const sid = String(session?.id ?? session?.sessionId ?? 'unknown');
+  const sid = sidOf(session);
   // 白名单外不记账：这些会话不会真替换，账本只会随宿主压缩反复增行。
   // 「只看会怎么换」的推演也放进白名单会话里做，别让它变成噪音。
   const mode = replaceMode(sid);
