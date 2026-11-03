@@ -69,7 +69,7 @@ function fakeCtx(cwd, history = []) {
 }
 
 /** 准备一个带别的会话原文的临时库，然后按真实接线跑一次 pre-step。 */
-async function runPreStep({ turn, messages, cwd = '/proj', memory = null, history = [] }) {
+async function runPreStep({ turn, messages, cwd = '/proj', memory = null, history = [], allow = true }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stack-pre-step-'));
   const file = path.join(dir, 'memory.db');
   const seed = openStore(file);
@@ -100,6 +100,12 @@ async function runPreStep({ turn, messages, cwd = '/proj', memory = null, histor
 
   const previous = process.env.DSH_MEMORY_CORE_DB;
   process.env.DSH_MEMORY_CORE_DB = file;
+  const allowFile = path.join(dir, 'allow.txt');
+  if (allow) fs.writeFileSync(allowFile, 'new-session:full\n');
+  const previousAllow = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = allow
+    ? allowFile
+    : path.join(dir, 'no-allow.txt');
   const harness = fakeCtx(cwd, history);
   try {
     apply(harness.ctx);
@@ -124,6 +130,8 @@ async function runPreStep({ turn, messages, cwd = '/proj', memory = null, histor
     harness.dispose();
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_DB;
     else process.env.DSH_MEMORY_CORE_DB = previous;
+    if (previousAllow === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousAllow;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -142,7 +150,7 @@ test('pre-step: 注入全局栈（别的会话最近几句话）', async () => {
   assert.equal(result.messages.filter((message) => message.source?.kind === 'memory-core').length, 0);
 });
 
-test('pre-step: 普通会话也接栈（不再只是白名单）', async () => {
+test('pre-step: 白名单外的会话不注入全局栈', async () => {
   const { hintText } = await runPreStep({
     turn: 1,
     messages: [userMessage('继续')],
@@ -151,8 +159,9 @@ test('pre-step: 普通会话也接栈（不再只是白名单）', async () => {
       [2, 'assistant', '在'],
       [3, 'user', '继续'],
     ],
+    allow: false,
   });
-  assert.ok(hintText.includes(STACK_MARK));
+  assert.equal(hintText.includes(STACK_MARK), false);
 });
 
 test('pre-step: 有取回命中时 recall_log 落账（不因 turnNo 漏定义而静默失败）', async () => {
