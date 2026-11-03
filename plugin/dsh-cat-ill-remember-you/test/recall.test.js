@@ -293,3 +293,24 @@ test('renderHint: carries the scene when the memory stored one', () => {
   assert.ok(text.includes('只有能自然接上'));
   assert.ok(!text.includes('\\n'));
 });
+
+test('retrieve: 零锚点时用句中的实词做一次弱匹配', () => {
+  const db = openStore(':memory:');
+  db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('fact', '缓存层太重，决定先不换。', '缓存层先不换', '[]', '[]', '规则提炼：fact', 'active', 1000)`,
+  ).run();
+  const hits = retrieve(db, { text: '继续改缓存层' });
+  assert.equal(hits.length, 1);
+  assert.ok(hits[0].why.includes('弱匹配'));
+  assert.ok(hits[0].summary.includes('缓存层'));
+  db.close();
+});
+
+test('retrieve: 有锚点时走正常匹配，不标弱匹配', () => {
+  const db = makeDb();
+  const hits = retrieve(db, { text: '产出/插件/foo.js 还要改吗' });
+  assert.equal(hits.length, 1);
+  assert.equal(hits[0].why.includes('弱匹配'), false);
+  db.close();
+});

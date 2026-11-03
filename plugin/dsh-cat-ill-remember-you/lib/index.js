@@ -207,14 +207,18 @@ export function apply(ctx) {
       const cwd = session?.header?.cwd;
 
       // 全局栈：跨会话按时间取最近几条，作为接续上下文（指针在栈里，正文现查）。
-      // 测试阶段只注入白名单会话：别让普通会话和主会话也带上实验性的跨会话上下文。
+      // 白名单内直接进替换流程；白名单外也注入，但只作预览——这个会话能看见
+      // 「如果被替换会是什么样」，自己的历史不改。
       try {
-        if (replaceMode(sid) !== 'off') {
-          const stacked = renderStack(db);
-          if (stacked) {
-            hintParts.push(stacked);
-            log(`stack chars=${stacked.length}`);
-          }
+        const stacked = renderStack(db);
+        if (stacked) {
+          const mode = replaceMode(sid);
+          const body =
+            mode === 'off'
+              ? `${stacked}\n（本会话不在替换白名单：以上栈只用于预览，不改写本会话历史。）`
+              : stacked;
+          hintParts.push(body);
+          log(`stack chars=${stacked.length} mode=${mode}`);
         }
       } catch (error) {
         log(`stack failed: ${error?.message ?? error}`);

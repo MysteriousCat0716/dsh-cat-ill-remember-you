@@ -56,6 +56,33 @@ export function escapeLike(value) {
   return String(value).replace(/[\\%_]/g, '\\$&');
 }
 
+/** Words too common to say anything about what a sentence is about. */
+const WEAK_STOP = new Set([
+  '这个', '那个', '什么', '怎么', '继续', '现在', '还是', '可以', '不是', '没有',
+  '我们', '你们', '他们', '一个', '一下', '已经', '因为', '所以', '但是', '如果',
+  '这样', '那样', '时候', '自己', '知道', '觉得', '就是', '要的', '了的', '一下',
+]);
+
+/**
+ * Weak terms: 3-char Chinese windows and 4+ char Latin words. Used only when
+ * the query has neither an anchor nor an entity — the sentence is chat, not
+ * a pointer at a file, so nothing in L1/L2/L3 can match it. These terms are
+ * deliberately crude: a miss costs one query, a false hit is marked as weak.
+ * @param {string} text
+ */
+function weakTerms(text) {
+  const s = String(text ?? '');
+  const out = new Set();
+  for (const match of s.matchAll(/[A-Za-z][A-Za-z0-9_.-]{3,}/g)) out.add(match[0]);
+  for (const run of s.match(/[\u4e00-\u9fa5]{3,}/g) ?? []) {
+    for (let i = 0; i + 3 <= run.length; i += 1) {
+      const term = run.slice(i, i + 3);
+      if (!WEAK_STOP.has(term)) out.add(term);
+    }
+  }
+  return [...out].slice(0, 8);
+}
+
 /** Pull the scene out of a stored `当时：…｜依据：…` why. */
 function sceneOf(why) {
   const text = String(why ?? '');
@@ -260,6 +287,32 @@ export function retrieve(db, { text, recent = [], now = Date.now(), cwd = '' } =
       if (inKnown(item, known)) continue;
       item.why = whyOf(item, query);
       push(item);
+    }
+  }
+
+  // L2.5: 弱匹配。锚点、实体都没有——这句话是聊天，不是指针，前面的层
+  // 没有东西可对。用句子里的实词在记忆正文里找最近一条，最多一条，
+  // why 写明「弱匹配」：放宽的代价要留在账上，不能假装它和锚点命中同权。
+  if (hits.length === 0 && query.anchors.length === 0 && query.entities.length === 0) {
+    const terms = weakTerms(query.text);
+    if (terms.length) {
+      const like = terms.map(() => `(text LIKE ? ESCAPE '\\')`).join(' OR ');
+      const values = terms.map((term) => `%${escapeLike(term)}%`);
+      const rows = db
+        .prepare(
+          `SELECT id, kind, summary, text, entities, anchors, t FROM memories
+           WHERE tier = 'active' AND origin = 'chat' AND (${like})
+           ORDER BY t DESC LIMIT 1`,
+        )
+        .all(...values);
+      for (const row of rows) {
+        const item = rowToItem(row, 'memory');
+        if (seen.has(`memory:${item.id}`) || inKnown(item, known)) continue;
+        item.section = 'weak';
+        item.why = `这一轮没给锚点也没给实体；这条和当前句子有词面重合（${terms.slice(0, 3).join('、')}…），属弱匹配。`;
+        push(item);
+        break;
+      }
     }
   }
 

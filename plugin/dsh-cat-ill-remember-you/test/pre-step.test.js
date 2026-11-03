@@ -161,7 +161,7 @@ test('pre-step: 注入全局栈（别的会话最近几句话）', async () => {
   assert.equal(result.messages.filter((message) => message.source?.kind === 'memory-core').length, 0);
 });
 
-test('pre-step: 白名单外的会话不注入全局栈', async () => {
+test('pre-step: 白名单外的会话也看到栈，但标明只是预览', async () => {
   const { hintText } = await runPreStep({
     turn: 1,
     messages: [userMessage('继续')],
@@ -172,7 +172,8 @@ test('pre-step: 白名单外的会话不注入全局栈', async () => {
     ],
     allow: false,
   });
-  assert.equal(hintText.includes(STACK_MARK), false);
+  assert.ok(hintText.includes(STACK_MARK));
+  assert.ok(hintText.includes('只用于预览'));
 });
 
 test('pre-step: 只说「继续」时，栈里的上一句参与记忆检索', async () => {
