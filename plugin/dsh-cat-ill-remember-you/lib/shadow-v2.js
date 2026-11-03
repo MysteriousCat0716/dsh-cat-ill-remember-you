@@ -271,8 +271,12 @@ export function promiseLines(entries, { max = 4, chars = 36 } = {}) {
  * 评估替换文本：守恒 + 断链。
  * @param {{replaced:Array, kept:Array, text:string}} input
  */
-export function assessReplacement({ replaced, kept, text }) {
+export function assessReplacement({ replaced, kept, text, charsBefore }) {
   const textOut = String(text ?? '');
+  const before = Number(charsBefore) || (Array.isArray(replaced)
+    ? replaced.reduce((total, entry) => total + String(entry.text ?? '').length, 0)
+    : 0);
+  const after = textOut.length;
   const tokens = keyTokens(replaced);
   const missing = tokens.filter((token) => !textOut.includes(token));
   const inReplaced = new Set(tokens);
@@ -286,7 +290,13 @@ export function assessReplacement({ replaced, kept, text }) {
   return {
     tokens,
     missing,
-    lostRatio: tokens.length === 0 ? 0 : missing.length / tokens.length,
+    // 主字段改成字符差：之前存的是「关键 token 缺失比例」，名字叫 lost_ratio
+    // 却不是「丢了多少文本」——chars 599→420 丢 30% 而它可以是 0。
+    // 允许为负：替换文本比原文长是合法的，它是缓存，不是压缩。
+    lostRatio: before === 0 ? 0 : 1 - after / before,
+    // 关键 token 保留率单独一列。两个一起看才有意义：
+    // 字符砍了 30% 而 token 全在，说明砍掉的是冗余；token 掉了才是断链风险。
+    tokenKeep: tokens.length === 0 ? 1 : 1 - missing.length / tokens.length,
     dangling,
   };
 }
@@ -300,8 +310,8 @@ export function recordShadowV2(db, row) {
   return db
     .prepare(
       `INSERT INTO shadow_v2
-       (sid, turn, t, range_start, range_end, seqs, text, chars_before, chars_after, kept, lost_ratio, dangling, applied, cwd)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (sid, turn, t, range_start, range_end, seqs, text, chars_before, chars_after, kept, lost_ratio, token_keep, dangling, applied, cwd)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       row.sid,
@@ -315,6 +325,7 @@ export function recordShadowV2(db, row) {
       row.charsAfter,
       row.kept,
       row.lostRatio,
+      row.tokenKeep ?? 0,
       row.dangling,
       row.applied ? 1 : 0,
       row.cwd ?? '',
@@ -576,8 +587,8 @@ export function planShadowV2(
   // 这段永远停在原文。full 分支在上面已经判过，这里主要挡 roll/兜底。
   if (sameRangeApplied(db, sid, rangeStart, rangeEnd)) return null;
   const text = renderReplacement(replaced);
-  const assessment = assessReplacement({ replaced, kept, text });
   const charsBefore = replaced.reduce((total, entry) => total + entry.text.length, 0);
+  const assessment = assessReplacement({ replaced, kept, text, charsBefore });
   // 冷却：刚换过就先不换，也不记账——窗口没动，再记一行没有新信息。
   // 只看不换的会话没有 applied=1 的行，永远不走这条分支。
   const recent = db
@@ -598,6 +609,7 @@ export function planShadowV2(
     charsAfter: text.length,
     kept: kept.length,
     lostRatio: assessment.lostRatio,
+    tokenKeep: assessment.tokenKeep,
     dangling: assessment.dangling.length,
     applied: false,
     cwd,

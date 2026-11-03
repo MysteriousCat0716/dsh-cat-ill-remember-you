@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS shadow_v2 (
   chars_after  INTEGER NOT NULL,
   kept         INTEGER NOT NULL DEFAULT 0,
   lost_ratio   REAL    NOT NULL DEFAULT 0,
+  token_keep   REAL    NOT NULL DEFAULT 0,
   dangling     INTEGER NOT NULL DEFAULT 0,
   applied      INTEGER NOT NULL DEFAULT 0,
   cwd          TEXT    NOT NULL DEFAULT ''
@@ -214,6 +215,16 @@ export function openStore(file = DEFAULT_DB_FILE) {
     ensureColumn(db, 'turns', 'cwd', "TEXT NOT NULL DEFAULT ''");
     ensureColumn(db, 'shadow_v2', 'applied', 'INTEGER NOT NULL DEFAULT 0');
     ensureColumn(db, 'shadow_v2', 'cwd', "TEXT NOT NULL DEFAULT ''");
+    // lost_ratio 的语义换过一次：老行存的是「关键 token 缺失比例」，
+    // 新字段 token_keep 才是它。回填一次，新旧行才能放在同一张表里比。
+    const addedTokenKeep = !db
+      .prepare('PRAGMA table_info(shadow_v2)')
+      .all()
+      .some((row) => row.name === 'token_keep');
+    ensureColumn(db, 'shadow_v2', 'token_keep', 'REAL NOT NULL DEFAULT 0');
+    if (addedTokenKeep) {
+      db.exec('UPDATE shadow_v2 SET token_keep = MAX(0, 1 - lost_ratio)');
+    }
     return db;
   } catch (error) {
     try {
