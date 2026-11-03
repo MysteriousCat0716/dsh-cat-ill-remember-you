@@ -4,11 +4,18 @@ export const STACK_MARK = '[全局上下文]';
 /** 栈容量：跨会话按时间保留最近这么多条指针。 */
 export const STACK_LIMIT = 50;
 
-/** 每次注入取多少条全局指针。 */
-export const INJECT_LIMIT = 20;
+/** 每次注入取多少条指针。 */
+export const INJECT_LIMIT = 30;
 
-/** 全局之外，最多再补多少条本会话更早的指针。 */
-export const LOCAL_EXTRA = 10;
+/**
+ * 按会话「新→旧」各取几条：最新会话 6 条、次新 5 条……第六新 1 条，共 21 条。
+ * 全局按时间取的问题是「会话长度决定占位」——一个长会话能占满整个窗口；
+ * 按会话分组后，每个最近的会话都有代表，越新给得越多（接续最需要上一个会话的结尾）。
+ */
+export const SESSION_STEPS = [6, 5, 4, 3, 2, 1];
+
+/** 全局之外，最多再补多少条本会话更早的指针（21 + 9 = 30）。 */
+export const LOCAL_EXTRA = 9;
 
 /** 注入时的总字数硬顶；条数够了但太长就只取最近几条。 */
 export const STACK_MAX_CHARS = 3000;
@@ -185,7 +192,7 @@ export function readStack(db, { limit = STACK_LIMIT } = {}) {
 }
 
 /**
- * 读本会话在栈里更早的几行（已被全局 20 条漏掉的）。
+ * 读本会话在栈里的几行（全局段按会话取，本会话不占名额，单独补）。
  * 按时间取，不做语义匹配——语义要多一次 embedding，且结果不稳定。
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {{sid?:string, limit?:number, exclude?:Set<string>}} [options]
@@ -207,8 +214,43 @@ export function readLocalStack(db, { sid = '', limit = LOCAL_EXTRA, exclude = ne
 }
 
 /**
+ * 按会话取尾部：会话按最近时间新→旧排，第 1 个取 steps[0] 条、第 2 个 steps[1] 条……
+ * 每个会话取的都是它自己的尾部（最近的几条），返回按时间正序。
+ * 会话不够就少取，不硬凑——凑数会引入噪音。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {{excludeSid?:string, steps?:number[]}} [options]
+ */
+export function readStackBySession(db, { excludeSid = '', steps = SESSION_STEPS } = {}) {
+  const sessions = db
+    .prepare('SELECT sid, MAX(t) AS mt FROM context_stack GROUP BY sid ORDER BY mt DESC')
+    .all();
+  const picked = [];
+  let slot = 0;
+  for (const session of sessions) {
+    if (slot >= steps.length) break;
+    // 本会话由「【本会话更早】」单独补，不占这里的名额。
+    if (String(session.sid) === String(excludeSid)) continue;
+    const cap = Math.max(1, Math.floor(Number(steps[slot]) || 1));
+    const rows = db
+      .prepare(
+        `SELECT s.sid, s.seq, s.t, s.evicted, s.summary, t.role, t.text
+         FROM context_stack s
+         LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
+         WHERE s.sid = ?
+         ORDER BY s.t DESC, s.id DESC
+         LIMIT ?`,
+      )
+      .all(String(session.sid), cap)
+      .reverse();
+    picked.push(...rows);
+    slot += 1;
+  }
+  return picked.sort((a, b) => a.t - b.t);
+}
+
+/**
  * 把栈渲染成注入块：最近 raw 条用原文，出了栈的用摘要。
- * 全局取 limit 条；再从栈里补最多 localExtra 条本会话更早的，单列一段。
+ * 全局段按会话「新→旧」取 6/5/4/3/2/1 条；本会话不占名额，另补最多 localExtra 条。
  * @param {import('node:sqlite').DatabaseSync} db
  * @param {{sid?:string, limit?:number, localExtra?:number, raw?:number, rawChars?:number, oldChars?:number, maxChars?:number}} [options]
  */
@@ -222,10 +264,16 @@ export function renderStack(
     rawChars = 220,
     oldChars = 140,
     maxChars = STACK_MAX_CHARS,
+    bySession = true,
   } = {},
 ) {
-  // readStack 是「新→旧」，注入块要「旧→新」：从下往上读才是时间顺序。
-  const rows = readStack(db, { limit }).slice().reverse();
+  // 全局段按会话分组取尾部：最新会话 6 条、次新 5 条……，再转成「旧→新」。
+  // 库里只有一个会话时分组段是空的，退回按时间取，别把唯一的会话也丢了。
+  let rows = bySession
+    ? readStackBySession(db, { excludeSid: sid })
+    : readStack(db, { limit }).slice().reverse();
+  if (rows.length === 0) rows = readStack(db, { limit }).slice().reverse();
+  if (rows.length > limit) rows = rows.slice(rows.length - limit);
   if (rows.length === 0) return '';
   // raw 的语义是「轮」不是「条」：从最后一条 user 往前数 raw 个 user，
   // 这个区间内的行全用原文。一轮多步回复不会再把自己的提问挤成摘要。
@@ -262,7 +310,7 @@ export function renderStack(
     const tag = newest ? '' : row.summary ? '（旧·摘要）' : '（节选）';
     if (!push(`- ${clock(row.t)} ${String(row.sid).slice(-6)} ${who}${tag}：${text}`)) break;
   }
-  const head = `${STACK_MARK} 最近 ${out.length} 条（跨会话，按时间正序；最近 ${Math.min(rows.length - rawFrom, out.length)} 条原文）`;
+  const head = `${STACK_MARK} 最近 ${out.length} 条（${bySession ? '按会话新→旧 6/5/4/3/2/1' : '跨会话'}，按时间正序；最近 ${Math.min(rows.length - rawFrom, out.length)} 条原文）`;
   const parts = [head];
   if (out.length > 0) parts.push(out.join('\n'));
   const local =
@@ -283,7 +331,7 @@ export function renderStack(
       localLines.push(line);
       used += line.length;
     }
-    if (localLines.length > 0) parts.push('【本会话更早】', ...localLines);
+    if (localLines.length > 0) parts.push('【本会话】', ...localLines);
   }
   return parts.join('\n');
 }

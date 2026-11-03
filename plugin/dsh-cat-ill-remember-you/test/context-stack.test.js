@@ -96,7 +96,7 @@ test('evictOverflow: assistant 行出栈时问回查前一条 user，不把答�
   db.close();
 });
 
-test('renderStack: 全局 20 条之外，补本会话更早的几条', () => {
+test('renderStack: 全局段按会话取，本会话单独补一段', () => {
   const db = openStore(':memory:');
   insertTurn(db, { sid: 's-me', seq: 1, text: '本会话第一句', t: 1000 });
   insertTurn(db, { sid: 's-me', seq: 2, text: '本会话第二句', t: 1001 });
@@ -111,11 +111,38 @@ test('renderStack: 全局 20 条之外，补本会话更早的几条', () => {
     pushStack(db, { sid, seq: 1, t: 2000 + index });
   }
   const text = renderStack(db, { sid: 's-me', limit: 20, localExtra: 10, raw: 0 });
-  assert.match(text, /【本会话更早】/);
+  assert.match(text, /【本会话】/);
   assert.match(text, /本会话第一句/);
   // 全局段里不该出现本会话那三条。
-  const globalPart = text.split('【本会话更早】')[0];
+  const globalPart = text.split('【本会话】')[0];
   assert.doesNotMatch(globalPart, /本会话第一句/);
+  db.close();
+});
+
+test('renderStack: 按会话新→旧分配 6/5/4/3/2/1 条，长会话不再占满窗口', () => {
+  const db = openStore(':memory:');
+  // 会话 A 最新但很长（10 条），只该拿 6 条。
+  for (let seq = 1; seq <= 10; seq += 1) {
+    insertTurn(db, { sid: 's-a', seq, text: `A第${seq}条`, t: 1000 + seq });
+    pushStack(db, { sid: 's-a', seq, t: 1000 + seq });
+  }
+  // 会话 B 与 C 各 8 条，分别该拿 5 条、4 条。
+  for (const [sid, base] of [['s-b', 2000], ['s-c', 3000]]) {
+    for (let seq = 1; seq <= 8; seq += 1) {
+      insertTurn(db, { sid, seq, text: `${sid}第${seq}条`, t: base + seq });
+      pushStack(db, { sid, seq, t: base + seq });
+    }
+  }
+  // 会话时间：C 最新（3001+）、B 次新、A 最旧（1001+）。
+  const text = renderStack(db, { sid: 's-me', limit: 30, localExtra: 0, raw: 0 });
+  const globalPart = text.split('【本会话】')[0];
+  const count = (mark) => (globalPart.match(new RegExp(mark, 'g')) || []).length;
+  assert.equal(count('s-c第'), 6);
+  assert.equal(count('s-b第'), 5);
+  assert.equal(count('A第'), 4);
+  // 取的是各自的尾部，不是开头。
+  assert.match(globalPart, /s-c第8条/);
+  assert.doesNotMatch(globalPart, /s-c第1条/);
   db.close();
 });
 
