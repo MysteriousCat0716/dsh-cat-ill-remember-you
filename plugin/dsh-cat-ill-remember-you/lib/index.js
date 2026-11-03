@@ -10,6 +10,7 @@ import { retrieve, renderHint } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
 import { planShadowV2 } from './shadow-v2.js';
 import { planCarry, setCarryLogger } from './carry.js';
+import { setOriginalsLogger } from './originals.js';
 import { backfillTurnCwd } from './backfill.js';
 import { forgetSweep } from './forget.js';
 import { embedPending } from './embed.js';
@@ -76,6 +77,8 @@ export function apply(ctx) {
   // 接续模块自己吞错误，但失败原因要能进日志——不然「没有别的会话」
   // 和「库读不出来」在日志里长得一样。
   setCarryLogger(log);
+  // 原文读取的 warn 默认是空函数；不接上，跳过大文件/解压失败在生产里全是静默的。
+  setOriginalsLogger(log);
   let store;
   // Set by the effect cleanup. An in-flight pre-step may still be awaiting
   // next() when the host disposes this scope; without this flag currentStore()

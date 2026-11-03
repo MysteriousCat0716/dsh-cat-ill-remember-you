@@ -6,7 +6,7 @@
  *   node tools/allow-session.mjs <sid>      # 把该会话写进真替换白名单
  *
  * 白名单文件默认 ~/.dsh/cache/replace-sessions.txt，每行一个 sid，`*` 全开。
- * 真替换还要 DSH_MEMORY_CORE_REPLACE=1 才生效；两个条件缺一不换。
+ * 文件存在即开：只要这个文件里有该 sid，真替换就生效；没有别的环境变量开关。
  */
 import fs from 'node:fs';
 import os from 'node:os';

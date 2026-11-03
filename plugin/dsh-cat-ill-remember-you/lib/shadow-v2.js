@@ -282,6 +282,7 @@ export function recordShadowV2(db, row) {
 }
 
 /** 旧的全局开关，保留导出只为兼容；现在开关就是白名单文件本身。 */
+/** @deprecated 已不读这个环境变量；开关只看下面的白名单文件。保留导出仅为兼容旧脚本。 */
 export const REPLACE_FLAG = 'DSH_MEMORY_CORE_REPLACE';
 
 /** 白名单文件：每行一个 session id，`*` 表示全部。只有列在里面的会话才真替换。 */

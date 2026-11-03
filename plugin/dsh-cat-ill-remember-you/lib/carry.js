@@ -115,7 +115,8 @@ export function renderTailCarry(tail, maxChars = LAST_SESSION_MAX_CHARS) {
   return clipText(`${finalHead}\n${picked.join('\n')}`, maxChars);
 }
 
-/** 这条会话历史里是否已经注入过接续缓存。 */export function hasCarry(messages) {
+/** 这条会话历史里是否已经注入过接续缓存。 */
+export function hasCarry(messages) {
   if (!Array.isArray(messages)) return false;
   return messages.some((message) => hasCarryText(message));
 }
