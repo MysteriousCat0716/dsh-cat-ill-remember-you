@@ -48,10 +48,15 @@ export const ROLL_COOLDOWN_MS = 60 * 1000;
 
 /** full 模式只留最后这几条原文（当前轮）；更早的全部换掉。 */
 export const FULL_KEEP_TAIL = 2;
+// full 的成本随会话长度线性涨：每轮全量拉该 sid 的 turns 再全量拼接。
+// 超过上限退回 roll（每轮只动 ROLL_STEP 条，成本有界），宁可压得慢也不卡事件循环。
+export const FULL_MAX_ROWS = envInt('DSH_MEMORY_CORE_FULL_MAX_ROWS', 800);
 
 // 同一个区间只允许一个替换在途：记账那一行要等微任务里的 append 成功才
 // 标 applied=1，这期间同区间再评估一次会重复排队。用内存锁挡住。
 const pending = new Set();
+// 已经报过降级的会话：日志只打一次，别每轮刷。
+const degraded = new Set();
 
 /** 读整数环境变量；空值或非法值回落到默认。 */
 function envInt(name, fallback) {
@@ -557,13 +562,26 @@ export function planShadowV2(
   // surface 走一遍才发现不记账。
   const mode = replaceMode(sid);
   if (mode === 'off') return null;
+  // full 每轮全量 SELECT 该 sid 的 turns（shadow-v2.js 里最贵的一次查询），
+  // 行数越多越慢。超过 FULL_MAX_ROWS 就降级到 roll：成本从 O(n) 回到 O(1)。
+  let fullRows = 0;
+  if (mode === 'full') {
+    const count = db
+      .prepare("SELECT COUNT(*) AS n FROM turns WHERE sid = ? AND origin = 'chat'")
+      .get(sid);
+    fullRows = Number(count?.n) || 0;
+    if (fullRows > FULL_MAX_ROWS && !degraded.has(sid)) {
+      degraded.add(sid);
+      log(`full degraded: rows=${fullRows} > ${FULL_MAX_ROWS} sid=${sid}`);
+    }
+  }
   const entries = surfaceMessages(session);
   let replaced;
   let kept;
   let rangeStart = null;
   let rangeEnd = null;
   let covered = null;
-  if (mode === 'full') {
+  if (mode === 'full' && fullRows <= FULL_MAX_ROWS) {
     // 完全替换：不等条数/字数门槛，当前轮之外全换。
     // 保留区按「轮」算，不按条数：从最后一条 user 起，到末尾全部留原文。
     // 旧的 FULL_KEEP_TAIL=2 在多步回复里会把当前 user 换进区间——最后两条
