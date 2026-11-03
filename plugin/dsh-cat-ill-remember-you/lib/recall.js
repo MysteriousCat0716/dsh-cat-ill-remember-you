@@ -82,6 +82,10 @@ const WEAK_STOP = new Set([
  * deliberately crude: a miss costs one query, a false hit is marked as weak.
  * @param {string} text
  */
+// 3 字窗口几乎必含疑问词/虚词；WEAK_STOP 里是整词，对窗口永远不命中，
+// 所以这里按「夹带」判断——「怎么做」「是什么」这类窗口整条丢掉。
+const WEAK_NOISE = /[什么怎么哪吗呢吧啊呀了的么这那个]/;
+
 function weakTerms(text) {
   const s = String(text ?? '');
   const out = new Set();
@@ -89,7 +93,8 @@ function weakTerms(text) {
   for (const run of s.match(/[\u4e00-\u9fa5]{3,}/g) ?? []) {
     for (let i = 0; i + 3 <= run.length; i += 1) {
       const term = run.slice(i, i + 3);
-      if (!WEAK_STOP.has(term)) out.add(term);
+      if (WEAK_STOP.has(term) || WEAK_NOISE.test(term)) continue;
+      out.add(term);
     }
   }
   return [...out].slice(0, 8);
@@ -122,9 +127,11 @@ function countOccurrences(text, term) {
 function weakScoreOf(db, terms, text, weightOf, countStmt) {
   const body = String(text ?? '');
   let score = 0;
+  let hits = 0;
   for (const term of terms) {
     const tf = countOccurrences(body, term);
     if (tf === 0) continue;
+    hits += 1;
     let weight = weightOf.get(term);
     if (weight === undefined) {
       const df = Number(countStmt.get(`%${escapeLike(term)}%`)?.c) || 0;
@@ -133,7 +140,9 @@ function weakScoreOf(db, terms, text, weightOf, countStmt) {
     }
     score += Math.min(tf, 3) * weight;
   }
-  return score;
+  // hits 也交回去：单个 3 字窗口的重合大多是巧合（「压缩要」也能对上
+  // 一篇讲 VS Code 的正文），要求至少两个不同窗口同时命中才认。
+  return { score, hits };
 }
 
 /** Pull the scene out of a stored `当时：…｜依据：…` why. */
@@ -494,7 +503,7 @@ export async function retrieve(
       for (const row of rows) {
         const item = rowToItem(row, 'memory');
         if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
-        const score = weakScoreOf(db, terms, row.text, weightOf, countStmt);
+        const { score } = weakScoreOf(db, terms, row.text, weightOf, countStmt);
         if (score <= 0) continue;
         item.section = 'weak';
         item.score = score;
@@ -503,9 +512,11 @@ export async function retrieve(
       }
       // 弱匹配的分数是「稀有度 × 条内重复」的累加，量纲和向量的 0–1 不一样；
       // 不归一化的话，一条长文靠重复次数就能压过语义命中。
+      // 再乘 0.5 上限：中文没有分词，3 字窗口的重合里有大量巧合，这层
+      // 只该补空位，不该抢向量层的位置。
       const top = candidates.reduce((max, item) => Math.max(max, item.score), 0);
       for (const item of candidates) {
-        item.score = top > 0 ? item.score / top : 0;
+        item.score = top > 0 ? (item.score / top) * 0.5 : 0;
         push(item);
       }
     }
