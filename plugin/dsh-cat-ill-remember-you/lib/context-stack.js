@@ -40,10 +40,29 @@ function summarize(text) {
 /**
  * 出栈摘要：同一轮的问答一起留——问留开头，答留尾巴。
  * 结论通常在 assistant 回复的末尾，只截 user 那一句会把结论丢掉。
- * 不调模型，回 turns 表按 (sid, seq) 取下一条 assistant 回复。
+ * 不调模型，回 turns 表按 (sid, seq) 取同一轮的问答。
+ * role 来自 turns：user 行问就是它自己；assistant 行要回查前面的 user——
+ * 否则会把答写成「问：<结论>」，摘要读起来像用户在问自己的结论。
  */
-function summarizeBlock(db, { sid, seq, text }) {
-  const question = String(text ?? '').replace(/\s+/g, ' ').trim();
+function summarizeBlock(db, { sid, seq, text, role }) {
+  const clean = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (role === 'assistant') {
+    const question = String(
+      db
+        .prepare(
+          `SELECT text FROM turns
+           WHERE sid = ? AND seq < ? AND origin = 'chat' AND role = 'user'
+           ORDER BY seq DESC LIMIT 1`,
+        )
+        .get(sid, seq)?.text ?? '',
+    )
+      .replace(/\s+/g, ' ')
+      .trim();
+    const tail = clean.length > 100 ? clean.slice(-100) : clean;
+    if (!question) return `我说：${tail}`;
+    return `问：${clip(question, 60)}｜答：${tail}`;
+  }
+  const question = clean;
   const answer = String(
     db
       .prepare(
@@ -91,7 +110,7 @@ export function evictOverflow(db, { limit = STACK_LIMIT } = {}) {
   if (overflow <= 0) return 0;
   const rows = db
     .prepare(
-      `SELECT s.id, s.sid, s.seq, t.text
+      `SELECT s.id, s.sid, s.seq, t.role, t.text
        FROM context_stack s
        LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
        WHERE s.evicted = 0

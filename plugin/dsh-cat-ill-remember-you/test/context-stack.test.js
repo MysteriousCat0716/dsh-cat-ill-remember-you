@@ -72,6 +72,30 @@ test('evictOverflow: 出栈摘要带上同一轮 assistant 的结尾', () => {
   db.close();
 });
 
+test('evictOverflow: assistant 行出栈时问回查前一条 user，不把答当问', () => {
+  const db = openStore(':memory:');
+  insertTurn(db, { sid: 's-a', seq: 1, role: 'user', text: '这次改哪边？', t: 1000 });
+  insertTurn(db, {
+    sid: 's-a',
+    seq: 2,
+    role: 'assistant',
+    text: '先改读取那一侧，写入不动。结论在最后这句上。',
+    t: 1001,
+  });
+  insertTurn(db, { sid: 's-b', seq: 1, role: 'user', text: '后来的一句', t: 2000 });
+  pushStack(db, { sid: 's-a', seq: 2, t: 1000 });
+  pushStack(db, { sid: 's-b', seq: 1, t: 2000 });
+  assert.equal(evictOverflow(db, { limit: 1 }), 1);
+  const oldest = readStack(db, { limit: 10 }).find((row) => row.sid === 's-a' && row.seq === 2);
+  assert.equal(oldest.evicted, 1);
+  // 问来自前一条 user，不是 assistant 自己的结论。
+  assert.match(oldest.summary, /问：这次改哪边？/);
+  assert.doesNotMatch(oldest.summary, /问：先改读取那一侧/);
+  // 答留尾巴。
+  assert.match(oldest.summary, /结论在最后这句上/);
+  db.close();
+});
+
 test('renderStack: 全局 20 条之外，补本会话更早的几条', () => {
   const db = openStore(':memory:');
   insertTurn(db, { sid: 's-me', seq: 1, text: '本会话第一句', t: 1000 });
