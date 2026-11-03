@@ -294,18 +294,28 @@ function sessionsFile() {
 }
 
 export function replaceEnabled(sid) {
-  // 白名单文件就是开关：不存在 = 全关；存在 = 只认名单里的会话（`*` 全开）。
-  // 不用改启动命令、不用带环境变量，写一行文本就开，删掉就关。
+  return replaceMode(sid) !== 'off';
+}
+
+/**
+ * 白名单里每行可以是 `sid`（滚动小步）或 `sid:full`（一次换掉全部旧历史）；
+ * `*`/`*:full` 对所有会话生效。返回 'off' | 'roll' | 'full'。
+ * @param {string|null|undefined} sid
+ * @returns {'off'|'roll'|'full'}
+ */
+export function replaceMode(sid) {
   let lines;
   try {
     lines = fs.readFileSync(sessionsFile(), 'utf8').split(/\r?\n/);
   } catch {
-    return false;
+    return 'off';
   }
   const allowed = lines.map((line) => line.trim()).filter(Boolean);
-  if (allowed.length === 0) return false;
-  if (allowed.includes('*')) return true;
-  return sid != null && allowed.includes(String(sid));
+  if (allowed.length === 0) return 'off';
+  const id = sid == null ? '' : String(sid);
+  if (allowed.includes('*:full') || allowed.includes(`${id}:full`)) return 'full';
+  if (allowed.includes('*') || allowed.includes(id)) return 'roll';
+  return 'off';
 }
 
 /**
@@ -383,6 +393,11 @@ export function planShadowV2(
 ) {
   const entries = surfaceMessages(session);
   if (entries.length <= MIN_ENTRIES) return null;
+  const sid = String(session?.id ?? session?.sessionId ?? 'unknown');
+  // 白名单外不记账：这些会话不会真替换，账本只会随宿主压缩反复增行。
+  // 「只看会怎么换」的推演也放进白名单会话里做，别让它变成噪音。
+  const mode = replaceMode(sid);
+  if (mode === 'off') return null;
   let replaced;
   let kept;
   if (roll) {
@@ -392,8 +407,9 @@ export function planShadowV2(
     const overCount = entries.length > ROLL_KEEP_TAIL + ROLL_STEP;
     if (!overCount && totalChars <= ROLL_SOFT_BUDGET) return null;
     const early = entries.slice(0, entries.length - ROLL_KEEP_TAIL);
-    replaced = early.slice(0, ROLL_STEP);
-    kept = [...early.slice(ROLL_STEP), ...entries.slice(entries.length - ROLL_KEEP_TAIL)];
+    // full：一次换掉全部旧历史（最近 KEEP_TAIL 条仍留原文）；roll：每轮只换最早 STEP 条。
+    replaced = mode === 'full' ? early : early.slice(0, ROLL_STEP);
+    kept = [...(mode === 'full' ? [] : early.slice(ROLL_STEP)), ...entries.slice(entries.length - ROLL_KEEP_TAIL)];
   } else {
     // 旧逻辑兜底：按比例保留，一次换掉更早的一段。
     const keepCount = resolveKeep(entries.length, keep);
@@ -403,10 +419,6 @@ export function planShadowV2(
     kept = split.kept;
   }
   if (replaced.length === 0) return null;
-  const sid = String(session?.id ?? session?.sessionId ?? 'unknown');
-  // 白名单外不记账：这些会话不会真替换，账本只会随宿主压缩反复增行。
-  // 「只看会怎么换」的推演也放进白名单会话里做，别让它变成噪音。
-  if (!replaceEnabled(sid)) return null;
   const cwd = typeof session?.header?.cwd === 'string' ? session.header.cwd : '';
   const rangeStart = replaced[0].seq;
   const rangeEnd = replaced.at(-1).seq;
