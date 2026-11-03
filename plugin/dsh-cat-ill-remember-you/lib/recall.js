@@ -183,17 +183,31 @@ function whyOf(item, query) {
   return `这一轮提到 ${hit.value}，当前上下文里还没有它之前的结论；这条补上。`;
 }
 
-function inKnown(item, known) {
-  return (
-    item.anchors.some((value) => known.anchors.has(value)) ||
-    item.entities.some((value) => known.entities.has(value))
-  );
+// 「这一轮已经给过哪条」按记忆 id 记，不按词面。
+// 旧实现只要 item 的任一锚点在本轮上下文出现过就丢整条——越在聊越不召回：
+// 正在讨论 `recall.js` 时，讲它历史决策的那条反而被「这个词出现过」挡掉。
+// 记忆 id 才有「给过/没给过」的含义；词面重合只说明在聊同一个东西，不说明已经知道结论。
+function recentlyGiven(db, sid, turn, limit = 40) {
+  if (!sid) return new Set();
+  try {
+    const rows = db
+      .prepare(
+        `SELECT memory_id FROM recall_log
+         WHERE sid = ? AND memory_id IS NOT NULL AND turn < ?
+         ORDER BY id DESC LIMIT ?`,
+      )
+      .all(sid, turn, limit);
+    return new Set(rows.map((row) => `memory:${row.memory_id}`));
+  } catch {
+    // 老库没有 recall_log 或表结构不同：退回「不抑制」，宁可重复也别哑掉。
+    return new Set();
+  }
 }
 
 /**
  * Three-level recall. Returns at most two gated hits.
  * @param {import('node:sqlite').DatabaseSync} db
- * @param {{text:string, recent?:string[], now?:number, cwd?:string}} input
+ * @param {{text:string, recent?:string[], now?:number, cwd?:string, sid?:string, turn?:number}} input
  */
 export async function retrieve(
   db,
@@ -202,6 +216,8 @@ export async function retrieve(
     recent = [],
     now = Date.now(),
     cwd = '',
+    sid = '',
+    turn = 0,
     referralText = null,
     vector = process.env.DSH_MEMORY_CORE_VECTOR !== 'off',
   } = {},
@@ -210,7 +226,7 @@ export async function retrieve(
   // 栈文本也拼进了检索句，但「这一句里有没有指代」要按用户原话判断：
   // 混着栈看，referral 几乎每轮都真，L3 的原文扫描就会每轮都跑。
   if (referralText != null) query.referral = REFERRAL.test(referralText);
-  const known = knownOf(recent);
+  const given = recentlyGiven(db, sid, turn);
   const seen = new Set();
   const hits = [];
 
@@ -237,7 +253,7 @@ export async function retrieve(
       .all(...query.entities);
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
-      if (seen.has(`memory:${item.id}`) || inKnown(item, known)) continue;
+      if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
       const entity = item.entities.find((value) => query.entities.includes(value));
       if (!entity) continue;
       item.section = 'people';
@@ -261,7 +277,7 @@ export async function retrieve(
       .all(...toolAnchors);
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
-      if (seen.has(`memory:${item.id}`) || inKnown(item, known)) continue;
+      if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
       const anchor = item.anchors.find((value) => toolAnchors.includes(value));
       if (!anchor) continue;
       item.section = 'tools';
@@ -280,7 +296,7 @@ export async function retrieve(
     .all(CACHE_SIZE);
   for (const row of cacheRows) {
     const item = rowToItem(row, 'memory');
-    if (!sharedWith(item, query) || inKnown(item, known)) continue;
+    if (!sharedWith(item, query) || given.has(`memory:${item.id}`)) continue;
     item.why = whyOf(item, query) || '刚才还在说它，缓存里直接取。';
     push(item);
   }
@@ -308,7 +324,7 @@ export async function retrieve(
       .all(...params);
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
-      if (inKnown(item, known)) continue;
+      if (given.has(`memory:${item.id}`)) continue;
       item.why = whyOf(item, query);
       push(item);
     }
@@ -343,7 +359,7 @@ export async function retrieve(
             .get(candidate.memory_id);
           if (!row) continue;
           const item = rowToItem(row, 'memory');
-          if (seen.has(`memory:${item.id}`) || inKnown(item, known)) continue;
+          if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
           item.section = 'vector';
           item.why = `这一轮没给锚点也没给实体；这条语义相近（${candidate.score.toFixed(3)}）。`;
           push(item);
@@ -374,7 +390,7 @@ export async function retrieve(
         .all(...values);
       for (const row of rows) {
         const item = rowToItem(row, 'memory');
-        if (seen.has(`memory:${item.id}`) || inKnown(item, known)) continue;
+        if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
         item.section = 'weak';
         item.why = `这一轮没给锚点也没给实体；这条和当前句子有词面重合（${terms.slice(0, 3).join('、')}…），属弱匹配。`;
         push(item);
@@ -419,7 +435,8 @@ export async function retrieve(
           entities: entitiesOf(text),
           why: '',
         };
-        if (inKnown(item, known)) continue;
+        // 原文层按 turn id 记，和记忆 id 不同源，不能拿 given 抑制；
+        // 同一句已经在上下文里的情况由上一行的 text 比较挡掉。
         item.why = whyOf(item, query);
         push(item);
       }

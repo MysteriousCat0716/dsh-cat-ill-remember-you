@@ -63,13 +63,30 @@ test('L2 matches anchors literally, so LIKE wildcards do not leak', async () => 
   db.close();
 });
 
-test('retrieve: anchor already in recent context is not fetched again', async () => {
+test('retrieve: 最近上下文里出现过锚点，不代表这条已经给过', async () => {
   const db = makeDb();
   const hits = await retrieve(db, {
     text: '产出/插件/foo.js 这个文件还要改吗',
     recent: ['刚才在说 产出/插件/foo.js'],
   });
-  assert.equal(hits.length, 0);
+  // 旧实现按词面抑制：讨论这个文件时，讲它过去结论的那条反而取不出来。
+  assert.equal(hits.length, 1);
+});
+
+test('retrieve: 同一会话更早轮次给过的记忆不再给，别的会话不交叉抑制', async () => {
+  const db = makeDb();
+  const id = Number(db.prepare('SELECT id FROM memories LIMIT 1').get().id);
+  db.prepare(
+    "INSERT INTO recall_log (sid, turn, t, memory_id, why) VALUES ('s1', 3, ?, ?, 'test')",
+  ).run(Date.now(), id);
+  const asked = '产出/插件/foo.js 这个文件还要改吗';
+
+  assert.equal((await retrieve(db, { text: asked, sid: 's1', turn: 5 })).length, 0);
+  // 同一轮（turn 相等）还没算「给过」，重试要能再拿到。
+  assert.equal((await retrieve(db, { text: asked, sid: 's1', turn: 3 })).length, 1);
+  // 另一个会话的账不该影响这一轮。
+  assert.equal((await retrieve(db, { text: asked, sid: 's2', turn: 5 })).length, 1);
+  db.close();
 });
 
 test('retrieve: L3 falls back to raw turns only with a referent', async () => {

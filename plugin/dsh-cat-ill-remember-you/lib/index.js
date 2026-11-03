@@ -268,12 +268,26 @@ export function apply(ctx) {
         : recentTexts(messages);
       const query = [stackQueryText(db, { limit: 2 }), currentText].filter(Boolean).join('\n');
       if (query) {
-        let hits = await retrieve(db, { text: query, cwd, recent, referralText: currentText });
+        let hits = await retrieve(db, {
+          text: query,
+          cwd,
+          recent,
+          sid,
+          turn: turnNo,
+          referralText: currentText,
+        });
         if (hits.length === 0 && currentText) {
           // 同一句放到更宽的栈上下文里再联想一次；还不中就是真没有。
           const wider = [stackQueryText(db, { limit: 6 }), currentText].filter(Boolean).join('\n');
           if (wider !== query) {
-            hits = await retrieve(db, { text: wider, cwd, recent, referralText: currentText });
+            hits = await retrieve(db, {
+            text: wider,
+            cwd,
+            recent,
+            sid,
+            turn: turnNo,
+            referralText: currentText,
+          });
             if (hits.length > 0) log(`recall retry hits=${hits.length}`);
           }
         }
