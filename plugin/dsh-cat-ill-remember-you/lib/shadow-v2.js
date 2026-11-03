@@ -432,13 +432,24 @@ export function planShadowV2(
   let rangeEnd = null;
   let covered = null;
   if (mode === 'full') {
-    // 完全替换：不等条数/字数门槛，最近 FULL_KEEP_TAIL 条之外全换。
-    // 必须留当前轮原文，否则模型看不到你刚说的话。
-    if (entries.length <= FULL_KEEP_TAIL) return null;
+    // 完全替换：不等条数/字数门槛，当前轮之外全换。
+    // 保留区按「轮」算，不按条数：从最后一条 user 起，到末尾全部留原文。
+    // 旧的 FULL_KEEP_TAIL=2 在多步回复里会把当前 user 换进区间——最后两条
+    // 常常是两条 assistant，模型就看不到你刚说的话了。
+    let keepFrom = -1;
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      if (entries[i].role === 'user') {
+        keepFrom = i;
+        break;
+      }
+    }
+    // 一条 user 都没有（比如刚加载）：退回按条数保留。
+    if (keepFrom < 0) keepFrom = Math.max(0, entries.length - FULL_KEEP_TAIL);
+    if (keepFrom <= 0) return null;
+    const keepSeqs = new Set(entries.slice(keepFrom).map((entry) => entry.seq));
     // 区间必须从 surface 第一个节点算起，而不是第一条「没被换过的消息」。
     // 旧替换块在 surface 上是一条 user/message；区间不包住它，每轮都会在
     // 它后面再插一块，块数随轮数线性涨，窗口永远不收窄。
-    const keepSeqs = new Set(entries.slice(-FULL_KEEP_TAIL).map((entry) => entry.seq));
     // 节点 0 是 system prompt：宿主只允许 system/message 恰好覆写它，
     // 区间从节点 1 起算，不能把它包进来。
     const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes.slice(1) : [];
@@ -455,8 +466,8 @@ export function planShadowV2(
       .prepare("SELECT seq, role, text FROM turns WHERE sid = ? AND origin = 'chat' ORDER BY seq")
       .all(sid);
     const originals = originalRows.filter((row) => !keepSeqs.has(row.seq));
-    replaced = originals.length > 0 ? originals : entries.slice(0, entries.length - FULL_KEEP_TAIL);
-    kept = entries.slice(entries.length - FULL_KEEP_TAIL);
+    replaced = originals.length > 0 ? originals : entries.slice(0, keepFrom);
+    kept = entries.slice(keepFrom);
   } else if (roll) {
     if (entries.length <= MIN_ENTRIES) return null;
     // 滚动模式：只动最早 STEP 条，最近 KEEP_TAIL 条永远是原文。

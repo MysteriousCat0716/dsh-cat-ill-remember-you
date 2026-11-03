@@ -242,8 +242,9 @@ test('planShadowV2: sid:full 会话只有 3 条时也换（不等 11 条门槛�
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan);
     assert.equal(plan.rangeStart, 1);
-    assert.equal(plan.rangeEnd, 1);
-    assert.equal(plan.kept, 2);
+    // 保留区按轮：最后一条是 user（seq 3），前面的 user+assistant 都进区间。
+    assert.equal(plan.rangeEnd, 2);
+    assert.equal(plan.kept, 1);
   } finally {
     restore();
     db.close();
@@ -300,7 +301,7 @@ test('planShadowV2: full 模式不把节点 0 的 system prompt 包进区间', (
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan);
     assert.equal(plan.rangeStart, 2);
-    assert.equal(plan.rangeEnd, 7);
+    assert.equal(plan.rangeEnd, 8);
     assert.match(plan.text, /第 2 条/);
   } finally {
     restore();
