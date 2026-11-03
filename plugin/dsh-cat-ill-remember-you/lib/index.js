@@ -69,6 +69,8 @@ export function apply(ctx) {
   // 原文读取的 warn 默认是空函数；不接上，跳过大文件/解压失败在生产里全是静默的。
   setOriginalsLogger(log);
   let store;
+  // pre-step 算出的记忆块文本，按会话存；provider 在 assemble/refreshContext 时取。
+  const hintBySid = new Map();
   // Set by the effect cleanup. An in-flight pre-step may still be awaiting
   // next() when the host disposes this scope; without this flag currentStore()
   // would happily reopen the db and write after unload.
@@ -123,6 +125,24 @@ export function apply(ctx) {
   // failure (lock, half-written file) would otherwise silence the plugin for
   // the rest of the process. Listeners stay registered and reopen lazily.
   if (!currentStore()) log('store unavailable at load; will retry lazily');
+  // 记忆块走宿主的动态上下文通道：pre-step 只把文本放进 hintBySid，
+  // provider 在 assemble 和 step() 的 refreshContext 时被求值。
+  // 不能塞 decision.messages——宿主会把每条非 runtime-context 的消息 append
+  // 成 user/message，记忆块就变成猫自己说的话。
+  try {
+    ctx.systemPrompt?.context?.({
+      name: 'memory-core',
+      order: 1000,
+      interpolate: false,
+      text: (context) => {
+        const agent = context?.agent;
+        if (!agent) return '';
+        return hintBySid.get(agent.id) ?? hintBySid.get(agent.session?.id) ?? '';
+      },
+    });
+  } catch (error) {
+    log(`systemPrompt.context registration failed: ${error?.message ?? error}`);
+  }
   startTimer();
 
   ctx.on('session/event', (session, event) => {
@@ -147,14 +167,11 @@ export function apply(ctx) {
     }
   });
 
-  // M2：每轮第一个 step 之前取回，把接续/取回文本挂到 assembly.contexts。
-  // 不能塞 decision.messages：宿主 step() 会把每条非 runtime-context 的
-  // decision.messages append 成 user/message（dsh-agent-loop step() 的
-  // firstAttempt 循环）——记忆块会变成猫自己说的话，显示在气泡里、进 surface。
-  // assembly.contexts 是宿主的动态上下文通道：renderContextSections 会把它
-  // 合进 runtime-context 快照（source.kind === 'runtime-context'），UI 按
-  // runtime context 渲染，不会冒充用户消息；refreshContext 对没有注册 provider
-  // 的 accepted 项原样保留，所以这一步挂上去的文本本轮就能生效。
+  // M2：每轮第一个 step 之前取回。不能塞 decision.messages：宿主 step() 会把
+  // 每条非 runtime-context 的 decision.messages append 成 user/message
+  // （dsh-agent-loop step() 的 firstAttempt 循环）——记忆块会变成猫自己说的话。
+  // 文本存进 hintBySid，由注册的 systemPrompt.context provider 在
+  // assemble/refreshContext 时取走，合进 runtime-context 快照。
   ctx.on('agent/pre-step', async ({ agent, messages, signal, step, turn }, next) => {
     const decision = await next();
     if (!decision || typeof decision !== 'object') {
@@ -245,25 +262,14 @@ export function apply(ctx) {
           hintParts.push(text);
         }
       }
-      if (hintParts.length === 0) return decision;
-      const assembly = decision.assembly;
-      if (!assembly || !Array.isArray(assembly.contexts)) {
-        log('pre-step: decision.assembly.contexts missing, skip injection');
+      if (hintParts.length === 0) {
+        hintBySid.delete(sid);
         return decision;
       }
-      // 没有注册 provider 的 accepted 项会在 refreshContext 里原样保留；
-      // 挂上本轮文本，step() 的 renderContextSections 会把它合进
-      // runtime-context 快照，而不是 append 成 user/message。
-      return {
-        ...decision,
-        assembly: {
-          ...assembly,
-          contexts: [
-            ...assembly.contexts,
-            { name: 'memory-core', text: hintParts.join('\n\n'), interpolate: false },
-          ],
-        },
-      };
+      // 只存文本，不改 decision：provider 会在本步 refreshContext 时取走。
+      hintBySid.set(sid, hintParts.join('\n\n'));
+      log(`hint queued sid=${sid} chars=${hintBySid.get(sid).length}`);
+      return decision;
     } catch (error) {
       log(`recall failed: ${error?.message ?? error}`);
       return decision;
