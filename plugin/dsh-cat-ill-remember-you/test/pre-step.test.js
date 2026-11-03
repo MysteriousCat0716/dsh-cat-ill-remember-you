@@ -46,6 +46,9 @@ function fakeCtx(cwd, history = []) {
         if (!handlers.has(event)) handlers.set(event, []);
         handlers.get(event).push(fn);
       },
+      inject(_deps, callback) {
+        callback(this);
+      },
       effect: (execute) => {
         const dispose = execute();
         if (typeof dispose === 'function') disposers.push(dispose);

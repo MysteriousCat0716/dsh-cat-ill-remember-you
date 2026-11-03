@@ -129,8 +129,11 @@ export function apply(ctx) {
   // provider 在 assemble 和 step() 的 refreshContext 时被求值。
   // 不能塞 decision.messages——宿主会把每条非 runtime-context 的消息 append
   // 成 user/message，记忆块就变成猫自己说的话。
-  try {
-    ctx.systemPrompt?.context?.({
+  // 可选注入：systemPrompt 服务出现时才注册——服务缺席时插件仍要能加载。
+  // 注意 text 的 context 运行时带 agent（与内置 working-directory 同款），
+  // 类型声明 AssembleContext 只列了 scope/signal，agent 是宿主合并进去的。
+  ctx.inject(['systemPrompt'], (scope) => {
+    scope.systemPrompt.context({
       name: 'memory-core',
       order: 1000,
       interpolate: false,
@@ -140,9 +143,7 @@ export function apply(ctx) {
         return hintBySid.get(agent.id) ?? hintBySid.get(agent.session?.id) ?? '';
       },
     });
-  } catch (error) {
-    log(`systemPrompt.context registration failed: ${error?.message ?? error}`);
-  }
+  });
   startTimer();
 
   ctx.on('session/event', (session, event) => {
