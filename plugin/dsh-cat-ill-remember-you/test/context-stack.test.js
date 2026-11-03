@@ -216,3 +216,15 @@ test('renderStack: dsh-ui 围栏换成卡片标题与正文，不再是一坨 JS
   assert.doesNotMatch(text, /"gap"/);
   db.close();
 });
+
+test('renderStack: 当前窗口里已有的行不在本会话段重复', () => {
+  const db = openStore(':memory:');
+  insertTurn(db, { sid: 's1', seq: 1, text: '第一句在栈里', t: 1000 });
+  insertTurn(db, { sid: 's1', seq: 2, text: '第二句在栈里', t: 2000 });
+  insertTurn(db, { sid: 's1', seq: 3, text: '第三句还在当前窗口', t: 3000 });
+  for (const seq of [1, 2, 3]) pushStack(db, { sid: 's1', seq, t: 1000 + seq * 1000 });
+  const text = renderStack(db, { sid: 's1', excludeSeqs: [3] });
+  assert.match(text, /第一句在栈里/);
+  assert.doesNotMatch(text, /第三句还在当前窗口/);
+  db.close();
+});

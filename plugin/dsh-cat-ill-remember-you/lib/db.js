@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 CREATE INDEX IF NOT EXISTS idx_turns_pending ON turns (consumed, id);
 CREATE INDEX IF NOT EXISTS idx_turns_sid     ON turns (sid, seq);
+CREATE INDEX IF NOT EXISTS idx_turns_cwd_t   ON turns (cwd, t);
 
 CREATE TABLE IF NOT EXISTS memories (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,

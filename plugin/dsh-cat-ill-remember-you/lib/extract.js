@@ -263,6 +263,18 @@ function supersedesFor(db, item) {
   if (!SUPERSEDE_CUE.test(text)) return null;
   const entities = Array.isArray(item.entities) ? item.entities : [];
   if (entities.length === 0) return null;
+  // 高频实体（猫、岸、dsh）几乎每条记忆都有，拿它当「同一主题」会把链挂到
+  // 无关记忆上。只认低频专名——entities.mentions 已经记着每个词出现几次；
+  // 查不到统计的词按低频处理（宁可多记一条链，也别把改口漏掉）。
+  const placeholders = entities.map(() => '?').join(',');
+  const freq = new Map(
+    db
+      .prepare(`SELECT name, mentions FROM entities WHERE name IN (${placeholders})`)
+      .all(...entities)
+      .map((row) => [row.name, Number(row.mentions) || 0]),
+  );
+  const credible = entities.filter((name) => (freq.get(name) ?? 0) <= 5);
+  if (credible.length === 0) return null;
   const rows = db
     .prepare(
       `SELECT id, entities FROM memories
@@ -270,9 +282,10 @@ function supersedesFor(db, item) {
        ORDER BY t DESC LIMIT 30`,
     )
     .all(item.kind);
+  const credibleSet = new Set(credible);
   for (const row of rows) {
     const old = namesOf(row.entities);
-    if (old.some((name) => entities.includes(name))) return row.id;
+    if (old.some((name) => credibleSet.has(name))) return row.id;
   }
   return null;
 }

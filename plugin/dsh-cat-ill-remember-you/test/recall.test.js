@@ -117,8 +117,8 @@ test('retrieve: 同一会话更早轮次给过的记忆不再给，别的会话�
   const asked = '产出/插件/foo.js 这个文件还要改吗';
 
   assert.equal((await retrieve(db, { text: asked, sid: 's1', turn: 5 })).length, 0);
-  // 同一轮（turn 相等）还没算「给过」，重试要能再拿到。
-  assert.equal((await retrieve(db, { text: asked, sid: 's1', turn: 3 })).length, 1);
+  // 重启后 turn 从 1 重新数；抑制靠 recall_log 的 id，不靠轮次号。
+  assert.equal((await retrieve(db, { text: asked, sid: 's1', turn: 1 })).length, 0);
   // 另一个会话的账不该影响这一轮。
   assert.equal((await retrieve(db, { text: asked, sid: 's2', turn: 5 })).length, 1);
   db.close();

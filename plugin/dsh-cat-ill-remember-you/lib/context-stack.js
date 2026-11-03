@@ -302,17 +302,23 @@ function pickRounds(rows, { budget, rawRounds = 0, rawChars = 220, oldChars = 14
   return picked;
 }
 
-/** 某个会话在栈里的全部行，按时间正序。 */
-function readSessionRows(db, sid) {
-  return db
+/** 某个会话在栈里的最近若干行，按时间正序。 */
+// 出栈行不会删、只会累积；长会话几千行时每轮全量走一遍太浪费。
+// pickRounds 本来就是从尾部装，所以查询也只取尾部 SESSION_ROWS_LIMIT 条。
+const SESSION_ROWS_LIMIT = 200;
+
+function readSessionRows(db, sid, limit = SESSION_ROWS_LIMIT) {
+  const rows = db
     .prepare(
       `SELECT s.sid, s.seq, s.t, s.evicted, s.summary, t.role, t.text
        FROM context_stack s
        LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
        WHERE s.sid = ?
-       ORDER BY s.t ASC, s.id ASC`,
+       ORDER BY s.t DESC, s.id DESC
+       LIMIT ?`,
     )
-    .all(String(sid));
+    .all(String(sid), Math.max(1, Math.floor(Number(limit) || SESSION_ROWS_LIMIT)));
+  return rows.reverse();
 }
 
 /** 栈里出现过的会话，按最近时间新→旧。 */
@@ -338,7 +344,7 @@ function trimOldest(items, { maxChars, maxItems }) {
  * 主约束是字数：每个会话有自己的预算，从尾部按整轮往回装；条数只做汇报。
  * 本会话不占全局名额，从总预算里另切一块。
  * @param {import('node:sqlite').DatabaseSync} db
- * @param {{sid?:string, limit?:number, raw?:number, rawChars?:number, oldChars?:number, maxChars?:number, budgets?:number[], localBudget?:number}} [options]
+ * @param {{sid?:string, limit?:number, raw?:number, rawChars?:number, oldChars?:number, maxChars?:number, budgets?:number[], localBudget?:number, excludeSeqs?:number[]}} [options]
  */
 export function renderStack(
   db,
@@ -351,6 +357,7 @@ export function renderStack(
     maxChars = STACK_MAX_CHARS,
     budgets = SESSION_BUDGETS,
     localBudget = LOCAL_BUDGET,
+    excludeSeqs = [],
   } = {},
 ) {
   const globalItems = [];
@@ -376,7 +383,11 @@ export function renderStack(
 
   // 库里只有本会话时全局段会空（新会话第一轮就是这样）；退回按时间取，别空着。
   if (globalItems.length === 0) {
-    const rows = readStack(db, { limit: STACK_LIMIT }).slice().reverse();
+    const skipSeqs = new Set((Array.isArray(excludeSeqs) ? excludeSeqs : []).map((seq) => Number(seq)));
+    const rows = readStack(db, { limit: STACK_LIMIT })
+      .slice()
+      .reverse()
+      .filter((row) => !skipSeqs.has(Number(row.seq)));
     globalItems.push(...pickRounds(rows, { budget: maxChars, rawRounds: raw, rawChars, oldChars, sid }));
   }
 
@@ -387,7 +398,12 @@ export function renderStack(
   let locals = [];
   if (sid && localBudget > 0) {
     const keys = new Set(globals.map((item) => item.key));
-    const rows = readSessionRows(db, sid).filter((row) => !keys.has(`${row.sid}:${row.seq}`));
+    // 当前窗口里已有的行不再重复注入：seq 是宿主真相，turn 号是进程内的，
+    // 旧会话恢复后不可比。调用方从 session.surface 尾部取 seq 传进来。
+    const skipSeqs = new Set((Array.isArray(excludeSeqs) ? excludeSeqs : []).map((seq) => Number(seq)));
+    const rows = readSessionRows(db, sid).filter(
+      (row) => !keys.has(`${row.sid}:${row.seq}`) && !skipSeqs.has(Number(row.seq)),
+    );
     const localItems = pickRounds(rows, { budget: localBudget, rawRounds: 0, rawChars, oldChars, sid });
     localItems.sort((a, b) => a.t - b.t);
     locals = trimOldest(localItems, {

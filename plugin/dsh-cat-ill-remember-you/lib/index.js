@@ -249,7 +249,14 @@ export function apply(ctx) {
       // 白名单内直接进替换流程；白名单外也注入，但只作预览——这个会话能看见
       // 「如果被替换会是什么样」，自己的历史不改。
       try {
-        const stacked = renderStack(db, { sid });
+        // 当前窗口里已经有的行不要在本会话段重复一遍：用户刚发的那条在
+        // pre-step 之前就入栈了，不排掉会在同一个 prompt 里出现两次。
+        // 用 seq 而不是轮次号——seq 是宿主真相，跨重启、恢复会话都成立。
+        const surfaceSeqs = (session?.surface?.nodes ?? [])
+          .map((node) => Number(node?.seq))
+          .filter((seq) => Number.isFinite(seq) && seq > 0)
+          .slice(-6);
+        const stacked = renderStack(db, { sid, excludeSeqs: surfaceSeqs });
         if (stacked) {
           const mode = replaceMode(sid);
           const body =

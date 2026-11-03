@@ -234,20 +234,19 @@ function scoreOf(item, query) {
   return anchors * 2 + entities;
 }
 
-// 「这一轮已经给过哪条」按记忆 id 记，不按词面。
-// 旧实现只要 item 的任一锚点在本轮上下文出现过就丢整条——越在聊越不召回：
-// 正在讨论 `recall.js` 时，讲它历史决策的那条反而被「这个词出现过」挡掉。
-// 记忆 id 才有「给过/没给过」的含义；词面重合只说明在聊同一个东西，不说明已经知道结论。
+// turn 不参与过滤：它是进程内轮次，旧会话恢复后从 1 重新数，
+// `turn < ?` 会让重启前的 recall_log 行查不到、抑制静默失效。
+// id 单调且跨重启成立，「最近 40 次注入」才是这里要的语义。
 function recentlyGiven(db, sid, turn, limit = 40) {
   if (!sid) return new Set();
   try {
     const rows = db
       .prepare(
         `SELECT memory_id FROM recall_log
-         WHERE sid = ? AND memory_id IS NOT NULL AND turn < ?
+         WHERE sid = ? AND memory_id IS NOT NULL
          ORDER BY id DESC LIMIT ?`,
       )
-      .all(sid, turn, limit);
+      .all(sid, limit);
     return new Set(rows.map((row) => `memory:${row.memory_id}`));
   } catch {
     // 老库没有 recall_log 或表结构不同：退回「不抑制」，宁可重复也别哑掉。
