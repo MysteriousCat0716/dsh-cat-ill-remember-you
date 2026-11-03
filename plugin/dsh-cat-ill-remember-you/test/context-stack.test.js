@@ -50,6 +50,26 @@ test('evictOverflow 幂等：容量内重复调用不出栈', () => {
   db.close();
 });
 
+test('evictOverflow: 本会话再长也不挤掉别的会话的尾巴', () => {
+  const db = openStore(':memory:');
+  // s-long 是本会话：5 条；s-other 是别的会话：1 条。
+  // 全局上限放得很宽，只有「每会话上限」该生效。
+  for (let seq = 1; seq <= 5; seq += 1) {
+    insertTurn(db, { sid: 's-long', seq, text: `本会话第 ${seq} 句`, t: 1000 + seq });
+    pushStack(db, { sid: 's-long', seq, t: 1000 + seq });
+  }
+  insertTurn(db, { sid: 's-other', seq: 1, text: '别的会话的结尾', t: 900 });
+  pushStack(db, { sid: 's-other', seq: 1, t: 900 });
+
+  // 每会话只留 3 条：s-long 出 2 条，s-other 不动。
+  assert.equal(evictOverflow(db, { limit: 100, perSession: 3 }), 2);
+  const rows = readStack(db, { limit: 20 });
+  const keptLong = rows.filter((row) => row.sid === 's-long' && row.evicted === 0).map((row) => row.seq);
+  assert.deepEqual(keptLong.sort(), [3, 4, 5]);
+  assert.equal(rows.find((row) => row.sid === 's-other').evicted, 0);
+  db.close();
+});
+
 test('evictOverflow: 出栈摘要带上同一轮 assistant 的结尾', () => {
   const db = openStore(':memory:');
   insertTurn(db, { sid: 's-a', seq: 1, role: 'user', text: '这句问的是第一件事', t: 1000 });

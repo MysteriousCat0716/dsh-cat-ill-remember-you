@@ -1,8 +1,15 @@
 /** 注入块头部标记；测试和日志靠它认「这一段是全局栈」。 */
 export const STACK_MARK = '[全局上下文]';
 
-/** 栈容量：跨会话按时间保留最近这么多条指针。 */
-export const STACK_LIMIT = 50;
+/**
+ * 每个会话各留多少条 active 指针。
+ * 容量是存储问题、预算是渲染问题，两者不该共用一个数：本会话几乎每句占一条，
+ * 用全局小容量会把别的会话整段挤掉，「按会话分配」就成了空话。
+ */
+export const STACK_PER_SESSION = 40;
+
+/** 全局安全网：会话数太多时，超出这个总数的最早指针出栈。 */
+export const STACK_LIMIT = 400;
 
 /** 每轮注入的条数安全上限：只做汇报与兜底，主约束是字数。 */
 export const INJECT_LIMIT = 30;
@@ -150,29 +157,60 @@ export function stackSize(db) {
 }
 
 /**
- * 出栈：超过 limit 的最早几条标记 evicted，并写一份本地摘要。
+ * 出栈：每个会话只留最近 perSession 条 active，全局再有上限兜底。
  * 不删行、不删 turns——出栈只是「不再当原文进注入」。
+ *
+ * 两级是故意的：一级按会话，保证本会话再长也挤不掉别的会话的尾巴；
+ * 二级按全局，防止会话越开越多把指针表撑大。limit 仍是总容量，测试与旧调用方靠它。
  * @returns {number} 本次出栈条数
  */
-export function evictOverflow(db, { limit = STACK_LIMIT } = {}) {
+export function evictOverflow(db, { limit = STACK_LIMIT, perSession = STACK_PER_SESSION } = {}) {
   const cap = Math.max(1, Math.floor(Number(limit) || STACK_LIMIT));
-  // 只数还没出栈的行：表里留着历史指针，用总数算会把 active 全挤掉。
+  const per = Math.max(1, Math.floor(Number(perSession) || STACK_PER_SESSION));
+  const update = db.prepare('UPDATE context_stack SET evicted = 1, summary = ? WHERE id = ?');
+  let evicted = 0;
+  const drain = (rows) => {
+    for (const row of rows) {
+      update.run(summarizeBlock(db, row), row.id);
+      evicted += 1;
+    }
+  };
+  const oldest = db.prepare(
+    `SELECT s.id, s.sid, s.seq, t.role, t.text
+     FROM context_stack s
+     LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
+     WHERE s.evicted = 0 AND s.sid = ?
+     ORDER BY s.t ASC, s.id ASC
+     LIMIT ?`,
+  );
+
+  // 一级：按会话。只数还没出栈的行，用总数算会把 active 全挤掉。
+  const sessions = db
+    .prepare('SELECT sid, count(*) AS c FROM context_stack WHERE evicted = 0 GROUP BY sid HAVING c > ?')
+    .all(per);
+  for (const session of sessions) {
+    const extra = Number(session.c) - per;
+    if (extra <= 0) continue;
+    drain(oldest.all(String(session.sid), extra));
+  }
+
+  // 二级：全局安全网。
   const active = Number(db.prepare('SELECT count(*) AS c FROM context_stack WHERE evicted = 0').get()?.c) || 0;
   const overflow = active - cap;
-  if (overflow <= 0) return 0;
-  const rows = db
-    .prepare(
-      `SELECT s.id, s.sid, s.seq, t.role, t.text
-       FROM context_stack s
-       LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
-       WHERE s.evicted = 0
-       ORDER BY s.t ASC, s.id ASC
-       LIMIT ?`,
-    )
-    .all(overflow);
-  const update = db.prepare('UPDATE context_stack SET evicted = 1, summary = ? WHERE id = ?');
-  for (const row of rows) update.run(summarizeBlock(db, row), row.id);
-  return rows.length;
+  if (overflow <= 0) return evicted;
+  drain(
+    db
+      .prepare(
+        `SELECT s.id, s.sid, s.seq, t.role, t.text
+         FROM context_stack s
+         LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
+         WHERE s.evicted = 0
+         ORDER BY s.t ASC, s.id ASC
+         LIMIT ?`,
+      )
+      .all(overflow),
+  );
+  return evicted;
 }
 
 /**
@@ -384,7 +422,7 @@ export function stackQueryText(db, { limit = 2, chars = 80 } = {}) {
  * 没有这一步，升级后的栈是空的，要等新消息才慢慢有内容。
  * @returns {number} 本次入栈条数
  */
-export function backfillStack(db, { limit = STACK_LIMIT * 4 } = {}) {
+export function backfillStack(db, { limit = STACK_PER_SESSION * 4 } = {}) {
   if (stackSize(db) > 0) return 0;
   const rows = db
     .prepare(
