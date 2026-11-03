@@ -447,13 +447,14 @@ export function planShadowV2(
     covered = nodes.slice(0, cutIndex);
     rangeStart = covered[0];
     rangeEnd = covered.at(-1);
-    // 旧替换块盖住的原文已经离开 surface，只有 turns 还留着；从 turns 取
-    // 原文重算，别把替换块再压一遍。
-    const originals = db
-      .prepare(
-        "SELECT seq, role, text FROM turns WHERE sid = ? AND origin = 'chat' AND seq < ? ORDER BY seq",
-      )
-      .all(sid, rangeEnd);
+    // 替换块盖住的原文已经离开 surface，只有 turns 还留着。区间覆盖的是
+    // surface 上除保留区外的全部节点，所以原文 = turns 里除保留区 seq 外的
+    // 全部 chat 行——不能按 seq < rangeEnd 取：surface 节点顺序和 seq 并不
+    // 单调，用 rangeEnd 会漏掉排在其前面的节点。
+    const originalRows = db
+      .prepare("SELECT seq, role, text FROM turns WHERE sid = ? AND origin = 'chat' ORDER BY seq")
+      .all(sid);
+    const originals = originalRows.filter((row) => !keepSeqs.has(row.seq));
     replaced = originals.length > 0 ? originals : entries.slice(0, entries.length - FULL_KEEP_TAIL);
     kept = entries.slice(entries.length - FULL_KEEP_TAIL);
   } else if (roll) {

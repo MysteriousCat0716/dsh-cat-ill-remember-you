@@ -308,6 +308,35 @@ test('planShadowV2: full 模式不把节点 0 的 system prompt 包进区间', (
   }
 });
 
+test('planShadowV2: full 模式按保留区过滤原文，不依赖 seq 单调', () => {
+  const db = openStore(':memory:');
+  const entries = [
+    [587, 'user', '[上下文替换｜旧消息压缩，非用户发言] 更早 5 条（seq 1-5），原文在本地：…'],
+    [571, 'assistant', '助手在 571 说的话'],
+    [579, 'user', '用户在 579 说的话'],
+    [605, 'assistant', '助手在 605 说的话'],
+  ];
+  const session = fakeSession(entries, 'sid-nonmono');
+  const insert = db.prepare(
+    'INSERT INTO turns (sid, seq, role, origin, cwd, text, t) VALUES (?,?,?,?,?,?,?)',
+  );
+  insert.run('sid-nonmono', 571, 'assistant', 'chat', '/w', '助手在 571 说的话', 571);
+  insert.run('sid-nonmono', 579, 'user', 'chat', '/w', '用户在 579 说的话', 579);
+  insert.run('sid-nonmono', 605, 'assistant', 'chat', '/w', '助手在 605 说的话', 605);
+  const restore = useWhitelist(['sid-nonmono:full']);
+  try {
+    const plan = planShadowV2(session, db, { now: 1 });
+    assert.ok(plan);
+    assert.equal(plan.rangeStart, 587);
+    assert.equal(plan.rangeEnd, 571);
+    // 保留区是 579、605；571 虽然在 rangeEnd 上，也必须进原文。
+    assert.match(plan.text, /助手在 571 说的话/);
+  } finally {
+    restore();
+    db.close();
+  }
+});
+
 test('planShadowV2: 字数超预算时条数不够也换（只换得动最早那段）', () => {
   const db = openStore(':memory:');
   const long = Array.from({ length: 8 }, (_, i) => [
