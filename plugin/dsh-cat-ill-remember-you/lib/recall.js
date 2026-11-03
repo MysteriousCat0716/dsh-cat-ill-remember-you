@@ -226,12 +226,52 @@ function whyOf(item, query) {
   return `这一轮提到 ${hit.value}，当前上下文里还没有它之前的结论；这条补上。`;
 }
 
-// 相关度粗分：命中的锚点/实体越多越相关。不做归一化——排序只需要可比，
-// 归一成 0-1 反而是在假装精度。
-function scoreOf(item, query) {
-  const anchors = item.anchors.filter((value) => query.anchors.includes(value)).length;
-  const entities = item.entities.filter((value) => query.entities.includes(value)).length;
-  return anchors * 2 + entities;
+// 相关度粗分：命中的锚点/实体按稀有度加权。
+//
+// 为什么不再用「个数」：长文本、锚点多的条目和任何 query 都有重合，
+// 个数计分会让它处处占优——「github 真好用」赢在 dsh/记忆/猫 这类高频词上，
+// 而不是赢在 query 真正问的东西上。
+// 稀有度沿用弱匹配层已经采纳的同一条判据：1 / log(2 + df)，
+// df 优先取 entities.mentions（现成的全库词频），锚点没有登记时退回 LIKE 计数。
+const dfCaches = new WeakMap();
+function dfCacheOf(db) {
+  let cache = dfCaches.get(db);
+  if (!cache) {
+    const freq = new Map();
+    try {
+      for (const row of db.prepare('SELECT name, mentions FROM entities').all()) {
+        freq.set(String(row.name), Number(row.mentions) || 0);
+      }
+    } catch {
+      // 老库没有 entities 表：全部走 LIKE 计数，不影响正确性，只是慢一点。
+    }
+    cache = { freq, weights: new Map() };
+    dfCaches.set(db, cache);
+  }
+  return cache;
+}
+function weightOf(db, term) {
+  const { freq, weights } = dfCacheOf(db);
+  const key = String(term);
+  const hit = weights.get(key);
+  if (hit !== undefined) return hit;
+  let df = freq.get(key);
+  if (df === undefined) {
+    try {
+      df = Number(db.prepare("SELECT count(*) AS c FROM memories WHERE summary LIKE ? ESCAPE '\\\\'").get(`%${key}%`)?.c) || 0;
+    } catch {
+      df = 0;
+    }
+  }
+  const weight = 1 / Math.log(2 + df);
+  weights.set(key, weight);
+  return weight;
+}
+function scoreOf(item, query, db) {
+  let score = 0;
+  for (const value of item.anchors) if (query.anchors.includes(value)) score += 2 * weightOf(db, value);
+  for (const value of item.entities) if (query.entities.includes(value)) score += weightOf(db, value);
+  return score;
 }
 
 // turn 不参与过滤：它是进程内轮次，旧会话恢复后从 1 重新数，
@@ -306,7 +346,7 @@ export async function retrieve(
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
       if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
-      item.score = scoreOf(item, query);
+      item.score = scoreOf(item, query, db);
       if (!best || item.score > best.score) best = item;
     }
     if (best) {
@@ -334,7 +374,7 @@ export async function retrieve(
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
       if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
-      item.score = scoreOf(item, query);
+      item.score = scoreOf(item, query, db);
       if (!best || item.score > best.score) best = item;
     }
     if (best) {
@@ -355,7 +395,7 @@ export async function retrieve(
   for (const row of cacheRows) {
     const item = rowToItem(row, 'memory');
     if (!sharedWith(item, query) || given.has(`memory:${item.id}`)) continue;
-    item.score = scoreOf(item, query) || 1;
+    item.score = scoreOf(item, query, db) || 1;
     item.why = whyOf(item, query) || '刚才还在说它，缓存里直接取。';
     push(item);
   }
@@ -384,7 +424,7 @@ export async function retrieve(
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
       if (given.has(`memory:${item.id}`)) continue;
-      item.score = scoreOf(item, query);
+      item.score = scoreOf(item, query, db);
       item.why = whyOf(item, query);
       push(item);
     }
@@ -510,7 +550,7 @@ export async function retrieve(
       // 同一句已经在上下文里的情况由上一行的 text 比较挡掉。
       // 没有名词时 whyOf 交回空串，push 会把整条丢掉；这里补一句来源说明，
       // 否则「只有指代」这条通路等于白改。
-      item.score = terms.length ? scoreOf(item, query) : 0.05;
+      item.score = terms.length ? scoreOf(item, query, db) : 0.05;
       item.why = terms.length
         ? whyOf(item, query)
         : '这一轮只有指代、抽不出名词；按「上次那件事」回看最近的原文。';
