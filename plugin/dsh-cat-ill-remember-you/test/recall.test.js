@@ -422,3 +422,23 @@ test('markRecallUsed: 回复里出现取回过的锚点才算用了，没出现�
   assert.equal(markRecallUsed(db, { sid: 's1', text: 'lib/recall.js 再确认一次。' }), 0);
   db.close();
 });
+
+test('retrieve: 沉睡（dormant）的记忆带锚点也能取回，取回后回升 active', async () => {
+  const db = openStore(':memory:');
+  const info = db
+    .prepare(
+      `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+       VALUES ('fact', 'lib/recall.js 的缓存按 mtime 失效。', 'recall.js 缓存按 mtime 失效',
+               '[]', ?, '规则提炼：fact', 'dormant', 1000)`,
+    )
+    .run(JSON.stringify(['lib/recall.js']));
+  const id = Number(info.lastInsertRowid);
+  const hits = await retrieve(db, {
+    text: 'lib/recall.js 的缓存现在怎么取值',
+    recent: [],
+    now: 2000,
+  });
+  assert.ok(hits.some((hit) => hit.id === id), '沉睡的相关记忆应该能被召回');
+  assert.equal(db.prepare('SELECT tier FROM memories WHERE id = ?').get(id).tier, 'active');
+  db.close();
+});

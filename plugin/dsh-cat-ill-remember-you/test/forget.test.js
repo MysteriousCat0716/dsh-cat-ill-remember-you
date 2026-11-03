@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openStore } from '../lib/db.js';
-import { forgetSweep, DAY_MS } from '../lib/forget.js';
+import { forgetSweep, reviveOnRecall, DAY_MS } from '../lib/forget.js';
 
 function seed(db, { kind = 'fact', tier = 'active', t = 0, lastUsed = 0, text = 'x', retention = 'auto' }) {
   const info = db
@@ -101,5 +101,23 @@ test('retention=ephemeral dormant goes cold after another 7 days', () => {
   });
   forgetSweep(db, { now });
   assert.equal(tierOf(db, id), 'cold');
+  db.close();
+});
+
+test('reviveOnRecall: 沉睡的被取回后记回 active，并留下 recalled 审计行', () => {
+  const db = openStore(':memory:');
+  const id = seed(db, { tier: 'dormant', t: 1000, lastUsed: 1000 });
+  const active = seed(db, { tier: 'active', t: 2000, lastUsed: 2000 });
+
+  assert.equal(reviveOnRecall(db, [id, active]), 1);
+  assert.equal(tierOf(db, id), 'active');
+  // last_used 跟着更新：回升就是「这次用上了」。
+  assert.ok(db.prepare('SELECT last_used FROM memories WHERE id = ?').get(id).last_used > 1000);
+  const log = db.prepare("SELECT * FROM forget_log WHERE memory_id = ? AND reason = 'recalled'").get(id);
+  assert.equal(log.tier_before, 'dormant');
+  assert.equal(log.tier_after, 'active');
+  // 已经是 active 的不重复写账；空 id 列表直接返回。
+  assert.equal(reviveOnRecall(db, [active]), 0);
+  assert.equal(reviveOnRecall(db, []), 0);
   db.close();
 });

@@ -98,3 +98,46 @@ export function forgetSweep(db, opts = {}) {
 
   return { demoted: dormant + cold, dormant, cold };
 }
+
+/**
+ * 回升：一次真被取回的 dormant 记忆重新记成 active。
+ *
+ * 遗忘是可回退的降级，不是删除——但旧实现只有降没有升，沉下去的记忆
+ * 就再也浮不上来（召回又只查 active，等于单向门）。
+ * 只处理 dormant：cold 是「几乎不再想起」，要回来得靠手动。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {number[]} ids
+ * @returns {number} 回升条数
+ */
+export function reviveOnRecall(db, ids) {
+  const unique = [...new Set((ids ?? []).map(Number).filter((id) => Number.isFinite(id) && id > 0))];
+  if (unique.length === 0) return 0;
+  const placeholders = unique.map(() => '?').join(',');
+  const rows = db
+    .prepare(`SELECT id FROM memories WHERE tier = 'dormant' AND id IN (${placeholders})`)
+    .all(...unique);
+  if (rows.length === 0) return 0;
+  const now = Date.now();
+  const revive = db.prepare("UPDATE memories SET tier = 'active', last_used = ? WHERE id = ?");
+  const log = db.prepare(
+    'INSERT INTO forget_log (memory_id, at, reason, tier_before, tier_after) VALUES (?, ?, ?, ?, ?)',
+  );
+  // 状态和审计行一起提交：只改 tier 不写 forget_log 的话，事后没法解释
+  // 一条记忆为什么又活了。
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const row of rows) {
+      revive.run(now, row.id);
+      log.run(row.id, now, 'recalled', 'dormant', 'active');
+    }
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      /* transaction may already be closed */
+    }
+    throw error;
+  }
+  return rows.length;
+}

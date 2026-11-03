@@ -17,6 +17,7 @@ import {
   endpointReady,
   nearestByVector,
 } from './embed.js';
+import { reviveOnRecall } from './forget.js';
 
 const REFERRAL = /(之前|上次|上回|那个|这个|这句|这份|这条|这段|那件|那事|还说过|刚才|前面|说过|提过|记得|上一条|刚刚)/;
 const MAX_HITS = 2;
@@ -336,7 +337,7 @@ export async function retrieve(
     const rows = db
       .prepare(
         `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
-         WHERE tier = 'active' AND origin = 'chat' AND (${clauses.join(' OR ')})
+         WHERE tier IN ('active','dormant') AND origin = 'chat' AND (${clauses.join(' OR ')})
          ORDER BY t DESC LIMIT 24`,
       )
       .all(...params);
@@ -369,7 +370,7 @@ export async function retrieve(
           const row = db
             .prepare(
               `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
-               WHERE id = ? AND tier = 'active' AND origin = 'chat'`,
+               WHERE id = ? AND tier IN ('active','dormant') AND origin = 'chat'`,
             )
             .get(candidate.memory_id);
           if (!row) continue;
@@ -492,6 +493,14 @@ export async function retrieve(
     seenAsks.add(key);
     picked.push(hit);
     chars += summary.length;
+  }
+  // 回升：这次真被取回的 dormant 记忆重新记成 active（遗忘是可回退的降级）。
+  // 只在选中的 2 条上做，候选遍历不算「被想起」。
+  try {
+    const ids = picked.filter((hit) => hit.source === 'memory').map((hit) => Number(hit.id));
+    if (ids.length) reviveOnRecall(db, ids);
+  } catch {
+    // 回升失败不影响这一轮取回：先让记忆拿回去用，账本下次再补。
   }
   return [...persona, ...picked];
 }
