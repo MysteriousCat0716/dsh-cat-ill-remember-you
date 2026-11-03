@@ -10,7 +10,6 @@
  */
 
 import { anchorsOf, entitiesOf } from './extract.js';
-import { splitMessage } from './split.js';
 import {
   DEFAULT_ENDPOINT,
   DEFAULT_MODEL,
@@ -42,12 +41,14 @@ const RELATION = /(以后|不要|别再|记住|规则|约定|答应|下次|永�
  */
 export function queryOf(text) {
   const value = String(text ?? '').trim();
-  const referring = splitMessage(value).filter((segment) => REFERRAL.test(segment));
-  const pool = referring.length ? referring.join(' ') : value;
+  // 整句都参与抽锚点。旧实现只留含指代的片段，本意是让长消息别拖进一堆
+  // 名词，代价却是长句的主题词被切掉：「上次说的那个，lib/recall.js 的缓存
+  // 问题」里的路径恰好不在指代片段里，锚点就丢了。anchorsOf/entitiesOf
+  // 自己会筛（路径、专名），不用先切段。
   return {
     text: value,
-    anchors: anchorsOf(pool),
-    entities: entitiesOf(pool),
+    anchors: anchorsOf(value),
+    entities: entitiesOf(value),
     referral: REFERRAL.test(value),
   };
 }

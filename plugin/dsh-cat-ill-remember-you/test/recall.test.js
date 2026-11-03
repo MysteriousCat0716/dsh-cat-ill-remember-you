@@ -35,6 +35,12 @@ test('queryOf: detects a referent', async () => {
   assert.equal(queryOf('之前说的那件事结论是什么').referral, true);
 });
 
+test('queryOf: 长句里的锚点不在指代片段里也要抽到', async () => {
+  const query = queryOf('上次说的那个，lib/recall.js 的缓存问题现在怎么样');
+  assert.equal(query.referral, true);
+  assert.ok(query.anchors.includes('lib/recall.js'));
+});
+
 test('retrieve: anchor match returns one hit with a written why', async () => {
   const db = makeDb();
   const hits = await retrieve(db, { text: '产出/插件/foo.js 这个文件还要改吗', recent: [] });
