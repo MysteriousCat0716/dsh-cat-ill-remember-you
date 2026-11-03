@@ -80,7 +80,9 @@ test('retrieve: anchor match returns one hit with a written why', async () => {
 
 test('retrieve: unrelated sentence gets nothing', async () => {
   const db = makeDb();
-  assert.deepEqual(await retrieve(db, { text: '今天天气不错', recent: [] }), []);
+  const hits = await retrieve(db, { text: '今天天气不错', recent: [] });
+  // 返回数组现在挂着 trace / personaCount 两个属性，不能再和裸 [] 做 deepEqual。
+  assert.equal(hits.length, 0);
 });
 
 test('L2 matches anchors literally, so LIKE wildcards do not leak', async () => {

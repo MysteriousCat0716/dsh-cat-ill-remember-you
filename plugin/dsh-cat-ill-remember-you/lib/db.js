@@ -86,6 +86,18 @@ CREATE TABLE IF NOT EXISTS recall_log (
   used      INTEGER
 );
 
+-- 召回账：每轮一行，记「候选里哪几条没被选上、为什么」。
+-- recall_log 只有「给了什么」，这里补「为什么没给」——否则调召回只能靠探针手测。
+CREATE TABLE IF NOT EXISTS recall_trace (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  sid     TEXT    NOT NULL,
+  turn    INTEGER NOT NULL,
+  t       INTEGER NOT NULL,
+  picked  INTEGER NOT NULL DEFAULT 0,
+  dropped INTEGER NOT NULL DEFAULT 0,
+  detail  TEXT    NOT NULL DEFAULT '[]'
+);
+
 CREATE TABLE IF NOT EXISTS shadow_log (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   sid            TEXT    NOT NULL,

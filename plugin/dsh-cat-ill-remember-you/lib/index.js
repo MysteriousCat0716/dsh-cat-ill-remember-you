@@ -314,6 +314,24 @@ export function apply(ctx) {
             if (hits.length > 0) log(`recall retry hits=${hits.length}`);
           }
         }
+        // 落选账：候选里哪几条没进最终 2 条、为什么。空结果也记一行——
+        // 「这轮为什么空」正是最需要看见的那一半。
+        try {
+          const detail = Array.isArray(hits.trace) ? hits.trace : [];
+          const personaCount = Number(hits.personaCount ?? 0);
+          db.prepare(
+            'INSERT INTO recall_trace (sid, turn, t, picked, dropped, detail) VALUES (?, ?, ?, ?, ?, ?)',
+          ).run(
+            sid,
+            turnNo,
+            Date.now(),
+            Math.max(0, hits.length - personaCount),
+            detail.length,
+            JSON.stringify(detail),
+          );
+        } catch (error) {
+          log(`recall trace failed: ${error?.message ?? error}`);
+        }
         if (hits.length > 0) {
           const text = renderHint(hits);
           log(`recall hits=${hits.length} chars=${text.length}`);

@@ -328,6 +328,20 @@ export async function retrieve(
   const given = recentlyGiven(db, sid, turn);
   const seen = new Set();
   const hits = [];
+  // 落选账：候选里哪几条没进最终的 2 条、为什么。账挂在返回数组上
+  // （数组也是对象），不改变 retrieve 的返回形状，调用方按需读 hits.trace。
+  // 上限 12 条：够看出「这轮为什么空」，又不至于把账本撑大。
+  const trace = [];
+  const note = (item, reason) => {
+    if (!item || trace.length >= 12) return;
+    trace.push({
+      id: item.id,
+      source: item.source ?? 'memory',
+      section: item.section ?? '',
+      score: Math.round((item.score ?? 0) * 1000) / 1000,
+      reason,
+    });
+  };
 
   const push = (item) => {
     if (!item || !item.why || seen.has(`${item.source}:${item.id}`)) return;
@@ -354,7 +368,10 @@ export async function retrieve(
     let best = null;
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
-      if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
+      if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) {
+        note(item, given.has(`memory:${item.id}`) ? 'given' : 'already-seen');
+        continue;
+      }
       item.score = scoreOf(item, query, db);
       if (!best || item.score > best.score) best = item;
     }
@@ -382,7 +399,10 @@ export async function retrieve(
     let best = null;
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
-      if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
+      if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) {
+        note(item, given.has(`memory:${item.id}`) ? 'given' : 'already-seen');
+        continue;
+      }
       item.score = scoreOf(item, query, db);
       if (!best || item.score > best.score) best = item;
     }
@@ -403,7 +423,10 @@ export async function retrieve(
     .all(CACHE_SIZE);
   for (const row of cacheRows) {
     const item = rowToItem(row, 'memory');
-    if (!sharedWith(item, query) || given.has(`memory:${item.id}`)) continue;
+    if (!sharedWith(item, query) || given.has(`memory:${item.id}`)) {
+      note(item, given.has(`memory:${item.id}`) ? 'given' : 'no-share');
+      continue;
+    }
     item.score = scoreOf(item, query, db) || 1;
     item.why = whyOf(item, query) || '刚才还在说它，缓存里直接取。';
     push(item);
@@ -432,7 +455,10 @@ export async function retrieve(
       .all(...params);
     for (const row of rows) {
       const item = rowToItem(row, 'memory');
-      if (given.has(`memory:${item.id}`)) continue;
+      if (given.has(`memory:${item.id}`)) {
+        note(item, 'given');
+        continue;
+      }
       item.score = scoreOf(item, query, db);
       item.why = whyOf(item, query);
       push(item);
@@ -455,7 +481,13 @@ export async function retrieve(
           // 0.55 不是拍的：真实库里「考研还剩多久」对毕设那条是 0.568，
           // 卡 0.6 会把它挡掉；再低就只剩「都像」的噪音。最多取一条，
           // 所以宁可偏宽一点，让它在门内有一次机会。
-          if (candidate.score < 0.55) continue;
+          if (candidate.score < 0.55) {
+            note(
+              { id: candidate.memory_id, source: 'memory', section: 'vector', score: candidate.score },
+              'low-vector',
+            );
+            continue;
+          }
           const row = db
             .prepare(
               `SELECT id, kind, summary, text, entities, anchors, t, confidence FROM memories
@@ -504,7 +536,10 @@ export async function retrieve(
         const item = rowToItem(row, 'memory');
         if (seen.has(`memory:${item.id}`) || given.has(`memory:${item.id}`)) continue;
         const { score } = weakScoreOf(db, terms, row.text, weightOf, countStmt);
-        if (score <= 0) continue;
+        if (score <= 0) {
+          note(item, 'low-weak');
+          continue;
+        }
         item.section = 'weak';
         item.score = score;
         item.why = `这一轮锚点/实体没对上；这条和当前句子有词面重合（${terms.slice(0, 3).join('、')}…），属弱匹配。`;
@@ -586,14 +621,29 @@ export async function retrieve(
   const sectionCount = { people: 0, tools: 0 };
   let chars = 0;
   for (const hit of ordered) {
-    if (picked.length >= MAX_HITS) break;
-    if (hit.section === 'people' && sectionCount.people >= 1) continue;
-    if (hit.section === 'tools' && sectionCount.tools >= 1) continue;
+    if (picked.length >= MAX_HITS) {
+      note(hit, 'budget');
+      continue;
+    }
+    if (hit.section === 'people' && sectionCount.people >= 1) {
+      note(hit, 'section-cap');
+      continue;
+    }
+    if (hit.section === 'tools' && sectionCount.tools >= 1) {
+      note(hit, 'section-cap');
+      continue;
+    }
     // 同一句提问引出的多条记忆只留最新一条，否则注入的是同一个问题的几个不同答案。
     const summary = String(hit.summary ?? '');
     const key = summary.startsWith('问：') ? summary.split('｜答：')[0] : summary.slice(0, 40);
-    if (seenAsks.has(key)) continue;
-    if (chars + summary.length > MAX_CHARS) continue;
+    if (seenAsks.has(key)) {
+      note(hit, 'duplicate');
+      continue;
+    }
+    if (chars + summary.length > MAX_CHARS) {
+      note(hit, 'chars');
+      continue;
+    }
     if (hit.section === 'people' || hit.section === 'tools') sectionCount[hit.section] += 1;
     seenAsks.add(key);
     picked.push(hit);
@@ -607,7 +657,10 @@ export async function retrieve(
   } catch {
     // 回升失败不影响这一轮取回：先让记忆拿回去用，账本下次再补。
   }
-  return [...persona, ...picked];
+  const result = [...persona, ...picked];
+  result.trace = trace;
+  result.personaCount = persona.length;
+  return result;
 }
 
 /**

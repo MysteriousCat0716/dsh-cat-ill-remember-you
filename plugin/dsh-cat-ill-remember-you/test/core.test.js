@@ -8,7 +8,7 @@ function freshStore() {
   return openStore(':memory:');
 }
 
-test('schema creates all eleven tables', () => {
+test('schema creates all twelve tables', () => {
   const db = freshStore();
   const names = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
@@ -23,6 +23,7 @@ test('schema creates all eleven tables', () => {
     'memories',
     'persona',
     'recall_log',
+    'recall_trace',
     'runs',
     'shadow_log',
     'shadow_v2',
