@@ -85,6 +85,78 @@ export function textOfEvent(event) {
   return parts.join('\n');
 }
 
+const REF_ID = /refId=(ref:\/\/[^;\s\]]+)/;
+const REF_TOOL = /producerTool=([^;\s\]]+)/;
+
+/**
+ * 大结果在会话日志里只是一行指针，不是原文。指针本身有用：
+ * refId 交给宿主的 ops_result 就能解引用，producerTool 说明是谁产生的。
+ * 插件自己读不到宿主的引用存储，所以这里只负责把 refId 捞出来。
+ */
+export function refPointerOf(text) {
+  const value = String(text ?? '');
+  const id = value.match(REF_ID);
+  if (id === null) return null;
+  const tool = value.match(REF_TOOL);
+  return { refId: id[1], producerTool: tool ? tool[1] : null };
+}
+
+/** tool/call 里 callId → 工具名，用来给 tool/result 补上名字。 */
+function toolNames(events) {
+  const names = new Map();
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type !== 'tool/call') continue;
+    const calls = event.data?.calls;
+    if (!Array.isArray(calls)) continue;
+    for (const call of calls) {
+      if (call && call.callId && call.name) names.set(String(call.callId), String(call.name));
+    }
+  }
+  return names;
+}
+
+/**
+ * 工具结果原文，按 seq 升序。小结果 text 就是原文；大结果 text 是指针，
+ * `ref` 非空表示原文不在日志里，要拿 refId 去宿主侧解引用。
+ * 名字从 tool/call 按 callId 配对——tool/result 自己不带工具名。
+ */
+export function toolResultsFromEvents(events) {
+  const names = toolNames(events);
+  const out = [];
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.type !== 'tool/result') continue;
+    const message = event.data?.message;
+    const content = Array.isArray(message?.content) ? message.content : [];
+    const text = content
+      .map((block) => (block && typeof block.text === 'string' ? block.text : ''))
+      .join('\n');
+    if (text.length === 0) continue;
+    const callId = message?.source?.callId ?? event.data?.callId ?? '';
+    out.push({
+      seq: event.seq,
+      name: names.get(String(callId)) ?? String(event.data?.name ?? ''),
+      text,
+      ref: refPointerOf(text),
+    });
+  }
+  return out;
+}
+
+/** 当前会话的工具结果；读不到按空数组处理，不影响替换流程。 */
+export function toolOriginals(session, sessionsRoot = DEFAULT_SESSIONS_ROOT) {
+  const file = sessionLogFile({
+    sid: typeof session?.id === 'string' ? session.id : '',
+    cwd: typeof session?.header?.cwd === 'string' ? session.header.cwd : '',
+    sessionsRoot,
+  });
+  try {
+    return toolResultsFromEvents(readSessionEvents(file));
+  } catch (error) {
+    warn(`originals: toolOriginals ${file} failed: ${error?.message ?? error}`);
+    return [];
+  }
+}
+
 /**
  * 会话里的「人说的话」原文，按 seq 升序。
  * 只收 source.kind === 'user' 的 user 消息（把 runtime-context、memory-core、

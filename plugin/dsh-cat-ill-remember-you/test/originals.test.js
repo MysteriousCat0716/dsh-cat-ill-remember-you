@@ -11,7 +11,9 @@ import {
   originalMessages,
   recentSessionOriginals,
   sessionLogFile,
+  refPointerOf,
   textOfEvent,
+  toolResultsFromEvents,
   workspaceDirName,
 } from '../lib/originals.js';
 
@@ -131,3 +133,44 @@ test('recentSessionOriginals 只跳过 origin=subagent，fork 会话照接', () 
   }
 });
 
+
+test('refPointerOf: 认出 ref 指针，普通文本返回 null', () => {
+  const pointer = refPointerOf(
+    '[Stored reference: refId=ref://session-x/read_files/abc; producerTool=read_files; totalBytes=195121]',
+  );
+  assert.equal(pointer.refId, 'ref://session-x/read_files/abc');
+  assert.equal(pointer.producerTool, 'read_files');
+  assert.equal(refPointerOf('普通的工具输出'), null);
+});
+
+test('toolResultsFromEvents: 按 callId 配工具名，大结果标出 ref', () => {
+  const events = [
+    {
+      type: 'tool/call',
+      seq: 1,
+      data: { calls: [{ callId: 'c1', name: 'read' }, { callId: 'c2', name: 'bash' }] },
+    },
+    {
+      type: 'tool/result',
+      seq: 2,
+      data: { message: { source: { callId: 'c1' }, content: [{ type: 'text', text: '小结果原文' }] } },
+    },
+    {
+      type: 'tool/result',
+      seq: 3,
+      data: {
+        message: {
+          source: { callId: 'c2' },
+          content: [{ type: 'text', text: '[Stored reference: refId=ref://s/bash/xyz; producerTool=bash]' }],
+        },
+      },
+    },
+  ];
+  const results = toolResultsFromEvents(events);
+  assert.equal(results.length, 2);
+  assert.equal(results[0].name, 'read');
+  assert.equal(results[0].text, '小结果原文');
+  assert.equal(results[0].ref, null);
+  assert.equal(results[1].name, 'bash');
+  assert.equal(results[1].ref.refId, 'ref://s/bash/xyz');
+});
