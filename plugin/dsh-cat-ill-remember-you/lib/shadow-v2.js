@@ -252,7 +252,7 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note
   // 约定句原样留：关键词救不了「以后不要怎样」，句子才行。
   const promises = promiseLines(list, { max: 4, chars: 36 });
   const header =
-    `[上下文替换｜旧消息压缩，非用户发言] 更早 ${list.length} 条（seq ${first}-${last}），原文在本地：\n` +
+    `[上下文替换｜旧消息压缩，非用户发言] 更早 ${list.length} 条（seq ${first}-${last}），原文事件仍在会话日志里、工具结果见下方索引：\n` +
     (keywords.length > 0 ? `关键词：${keywords.join('、')}\n` : '') +
     (promises.length > 0 ? `约定：${promises.join('；')}\n` : '') +
     (note ? `${note}\n` : '');
