@@ -2,7 +2,10 @@
 export const STACK_MARK = '[全局上下文]';
 
 /** 栈容量：跨会话按时间保留最近这么多条指针。 */
-export const STACK_LIMIT = 10;
+export const STACK_LIMIT = 20;
+
+/** 注入时的总字数硬顶；条数够了但太长就只取最近几条。 */
+export const STACK_MAX_CHARS = 3000;
 
 /** 最近的这么多条用原文；更早的用出栈时留下的摘要。 */
 export const STACK_RAW = 4;
@@ -95,19 +98,32 @@ export function readStack(db, { limit = STACK_LIMIT } = {}) {
  */
 export function renderStack(
   db,
-  { limit = STACK_LIMIT, raw = STACK_RAW, rawChars = 220, oldChars = 140 } = {},
+  {
+    limit = STACK_LIMIT,
+    raw = STACK_RAW,
+    rawChars = 220,
+    oldChars = 140,
+    maxChars = STACK_MAX_CHARS,
+  } = {},
 ) {
   const rows = readStack(db, { limit });
   if (rows.length === 0) return '';
-  const lines = rows.map((row, index) => {
+  const out = [];
+  let used = 0;
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
     const newest = index < raw && !row.evicted;
     const who = row.role === 'user' ? '用户' : '助手';
     const text = newest ? clip(row.text, rawChars) : clip(row.summary || row.text, oldChars);
     const tag = newest ? '' : '（旧·摘要）';
-    return `- ${clock(row.t)} ${String(row.sid).slice(-6)} ${who}${tag}：${text}`;
-  });
-  const head = `${STACK_MARK} 最近 ${rows.length} 条（跨会话，按时间；最近 ${Math.min(raw, rows.length)} 条原文）`;
-  return `${head}\n${lines.join('\n')}`;
+    const line = `- ${clock(row.t)} ${String(row.sid).slice(-6)} ${who}${tag}：${text}`;
+    // 最近的一条无论如何都留着；之后超字数就停，宁可少几条也不撑爆。
+    if (out.length > 0 && used + line.length > maxChars) break;
+    out.push(line);
+    used += line.length;
+  }
+  const head = `${STACK_MARK} 最近 ${out.length} 条（跨会话，按时间；最近 ${Math.min(raw, out.length)} 条原文）`;
+  return `${head}\n${out.join('\n')}`;
 }
 
 /**
