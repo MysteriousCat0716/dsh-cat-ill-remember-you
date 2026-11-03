@@ -23,3 +23,6 @@ _backups/
 # 系统垃圾
 Thumbs.db
 .DS_Store
+
+# 临时脚本（跑完就删，不入库）
+_tmp/
