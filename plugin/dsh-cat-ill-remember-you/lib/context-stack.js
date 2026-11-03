@@ -13,8 +13,11 @@ export const LOCAL_EXTRA = 10;
 /** 注入时的总字数硬顶；条数够了但太长就只取最近几条。 */
 export const STACK_MAX_CHARS = 3000;
 
-/** 最近的这么多条用原文；更早的用出栈时留下的摘要。 */
-export const STACK_RAW = 4;
+/**
+ * 最近的这么多「轮」用原文；更早的用出栈时留下的摘要。
+ * 一轮 = 一条 user 到下一条 user 之前；按条算会让多步回复把自己的提问挤成摘要。
+ */
+export const STACK_RAW = 2;
 
 /** 出栈摘要的长度上限。 */
 const SUMMARY_CHARS = 140;
@@ -27,7 +30,47 @@ function clip(text, maxChars) {
 
 function clock(t) {
   const date = new Date(Number(t) || 0);
-  return Number.isNaN(date.getTime()) ? '--:--' : date.toISOString().slice(11, 16);
+  if (Number.isNaN(date.getTime())) return '--:--';
+  // 栈是给人读「刚才 / 昨晚」的，必须用本机时区。toISOString 是 UTC，
+  // 在 +08:00 会差 8 小时，跨天时还会把凌晨写成前一天下午。
+  return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+/** 从 dsh-ui 树里收集所有可读文本（content / text 字段）。 */
+function collectUiText(items, out = []) {
+  if (!Array.isArray(items)) return out;
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    for (const key of ['content', 'text']) {
+      if (typeof item[key] === 'string' && item[key].trim()) out.push(item[key].trim());
+    }
+    if (item.type === 'table' && Array.isArray(item.rows)) {
+      for (const row of item.rows) {
+        if (Array.isArray(row)) out.push(row.filter((cell) => typeof cell === 'string').join('｜'));
+      }
+    }
+    if (item.items) collectUiText(item.items, out);
+  }
+  return out;
+}
+
+/**
+ * dsh-ui 围栏对栈没有信息量——它渲染完就只剩一坨 JSON。
+ * 截断前先把那块换成「[卡片] 标题｜正文」，其余原文保留。
+ * 解析失败就原样返回，栈宁可难看也不能因为一块 UI 整条丢掉。
+ */
+function plainText(text) {
+  const source = String(text ?? '');
+  const fence = /```dsh-ui\s*\n([\s\S]*?)```/.exec(source);
+  if (!fence) return source;
+  try {
+    const spec = JSON.parse(fence[1]);
+    const pieces = [spec.title, ...collectUiText(spec.items)].filter(Boolean);
+    const body = pieces.join('｜').replace(/\s+/g, ' ').trim();
+    return source.replace(fence[0], body ? `[卡片] ${body}` : '[卡片]');
+  } catch {
+    return source;
+  }
 }
 
 /** 本地摘要：不调模型，只做首尾保留。够让「有过这件事」活下来。 */
@@ -181,8 +224,25 @@ export function renderStack(
     maxChars = STACK_MAX_CHARS,
   } = {},
 ) {
-  const rows = readStack(db, { limit });
+  // readStack 是「新→旧」，注入块要「旧→新」：从下往上读才是时间顺序。
+  const rows = readStack(db, { limit }).slice().reverse();
   if (rows.length === 0) return '';
+  // raw 的语义是「轮」不是「条」：从最后一条 user 往前数 raw 个 user，
+  // 这个区间内的行全用原文。一轮多步回复不会再把自己的提问挤成摘要。
+  let rawFrom = rows.length;
+  if (raw > 0) {
+    let seen = 0;
+    for (let index = rows.length - 1; index >= 0; index -= 1) {
+      if (rows[index].role === 'user') {
+        seen += 1;
+        if (seen === raw) {
+          rawFrom = index;
+          break;
+        }
+      }
+    }
+    if (seen < raw) rawFrom = 0;
+  }
   const out = [];
   let used = 0;
   const push = (line) => {
@@ -194,13 +254,15 @@ export function renderStack(
   };
   for (let index = 0; index < rows.length; index += 1) {
     const row = rows[index];
-    const newest = index < raw && !row.evicted;
+    const newest = index >= rawFrom && !row.evicted;
     const who = row.role === 'user' ? '用户' : '助手';
-    const text = newest ? clip(row.text, rawChars) : clip(row.summary || row.text, oldChars);
-    const tag = newest ? '' : '（旧·摘要）';
+    const source = plainText(row.text);
+    const text = newest ? clip(source, rawChars) : clip(row.summary ? plainText(row.summary) : source, oldChars);
+    // 有真摘要才叫「旧·摘要」；只是原文截断的标「节选」，不撒谎。
+    const tag = newest ? '' : row.summary ? '（旧·摘要）' : '（节选）';
     if (!push(`- ${clock(row.t)} ${String(row.sid).slice(-6)} ${who}${tag}：${text}`)) break;
   }
-  const head = `${STACK_MARK} 最近 ${out.length} 条（跨会话，按时间；最近 ${Math.min(raw, out.length)} 条原文）`;
+  const head = `${STACK_MARK} 最近 ${out.length} 条（跨会话，按时间正序；最近 ${Math.min(rows.length - rawFrom, out.length)} 条原文）`;
   const parts = [head];
   if (out.length > 0) parts.push(out.join('\n'));
   const local =
@@ -213,9 +275,10 @@ export function renderStack(
       : [];
   if (local.length > 0) {
     const localLines = [];
-    for (const row of local) {
-      const text = clip(row.summary || row.text, oldChars);
-      const line = `- ${clock(row.t)} ${row.role === 'user' ? '用户' : '助手'}（旧·摘要）：${text}`;
+    for (const row of local.slice().reverse()) {
+      const text = clip(row.summary ? plainText(row.summary) : plainText(row.text), oldChars);
+      const tag = row.summary ? '（旧·摘要）' : '（节选）';
+      const line = `- ${clock(row.t)} ${row.role === 'user' ? '用户' : '助手'}${tag}：${text}`;
       if (used + line.length > maxChars) break;
       localLines.push(line);
       used += line.length;

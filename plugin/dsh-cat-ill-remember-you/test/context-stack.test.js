@@ -118,3 +118,56 @@ test('renderStack: 全局 20 条之外，补本会话更早的几条', () => {
   assert.doesNotMatch(globalPart, /本会话第一句/);
   db.close();
 });
+
+test('renderStack: 注入块按时间正序，最早的在最上面', () => {
+  const db = openStore(':memory:');
+  insertTurn(db, { sid: 's-a', seq: 1, text: '最早那条', t: 1000 });
+  insertTurn(db, { sid: 's-b', seq: 1, text: '中间那条', t: 2000 });
+  insertTurn(db, { sid: 's-c', seq: 1, text: '最新那条', t: 3000 });
+  pushStack(db, { sid: 's-a', seq: 1, t: 1000 });
+  pushStack(db, { sid: 's-b', seq: 1, t: 2000 });
+  pushStack(db, { sid: 's-c', seq: 1, t: 3000 });
+  const text = renderStack(db, { limit: 10, raw: 0 });
+  assert.ok(text.indexOf('最早那条') < text.indexOf('中间那条'));
+  assert.ok(text.indexOf('中间那条') < text.indexOf('最新那条'));
+  db.close();
+});
+
+test('renderStack: 时间戳用本机时区，不是 UTC', () => {
+  const db = openStore(':memory:');
+  // 本地 2026-11-04 01:21；UTC 会写成前一天的 17:21。
+  const t = new Date(2026, 10, 4, 1, 21, 0).getTime();
+  insertTurn(db, { sid: 's-a', seq: 1, text: '凌晨说的话', t });
+  pushStack(db, { sid: 's-a', seq: 1, t });
+  const text = renderStack(db, { limit: 10 });
+  assert.match(text, /01:21/);
+  assert.doesNotMatch(text, /17:21/);
+  db.close();
+});
+
+test('renderStack: 原文按轮算，多步回复不会把提问挤成摘要', () => {
+  const db = openStore(':memory:');
+  const tail = (mark) => `${mark}${'长'.repeat(200)}尾巴${mark}`;
+  insertTurn(db, { sid: 's-a', seq: 1, text: '把缓存改一下，改完告诉我结论' });
+  insertTurn(db, { sid: 's-a', seq: 2, role: 'assistant', text: tail('A1') });
+  insertTurn(db, { sid: 's-a', seq: 3, role: 'assistant', text: tail('A2') });
+  insertTurn(db, { sid: 's-a', seq: 4, role: 'assistant', text: tail('A3') });
+  for (const seq of [1, 2, 3, 4]) pushStack(db, { sid: 's-a', seq, t: 1000 + seq });
+  const text = renderStack(db, { limit: 10, raw: 1 });
+  // 这一轮整轮都在原文区间里：提问和三条回复的原文都在。
+  assert.match(text, /把缓存改一下/);
+  assert.match(text, /尾巴A1/);
+  assert.match(text, /尾巴A3/);
+  db.close();
+});
+
+test('renderStack: dsh-ui 围栏换成卡片标题与正文，不再是一坨 JSON', () => {
+  const db = openStore(':memory:');
+  const ui = '```dsh-ui\n{"title":"三件都办了","gap":10,"items":[{"type":"text","content":"正文一句话"}]}\n```';
+  insertTurn(db, { sid: 's-a', seq: 1, role: 'assistant', text: ui });
+  pushStack(db, { sid: 's-a', seq: 1, t: 1000 });
+  const text = renderStack(db, { limit: 10, raw: 1 });
+  assert.match(text, /\[卡片\] 三件都办了｜正文一句话/);
+  assert.doesNotMatch(text, /"gap"/);
+  db.close();
+});
