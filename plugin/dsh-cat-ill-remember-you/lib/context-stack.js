@@ -361,6 +361,7 @@ export function renderStack(
     budgets = SESSION_BUDGETS,
     localBudget = LOCAL_BUDGET,
     excludeSeqs = [],
+    excludeKeys = new Set(),
   } = {},
 ) {
   const globalItems = [];
@@ -369,7 +370,9 @@ export function renderStack(
     if (slot >= budgets.length) break;
     // 本会话由下面的【本会话】段单独补，不占全局名额。
     if (sid && String(session.sid) === String(sid)) continue;
-    const rows = readSessionRows(db, session.sid);
+    const rows = readSessionRows(db, session.sid).filter(
+      (row) => !excludeKeys.has(`${row.sid}:${row.seq}`),
+    );
     if (rows.length === 0) continue;
     globalItems.push(
       ...pickRounds(rows, {
@@ -390,7 +393,8 @@ export function renderStack(
     const rows = readStack(db, { limit: STACK_LIMIT })
       .slice()
       .reverse()
-      .filter((row) => !skipSeqs.has(Number(row.seq)));
+      .filter((row) => !skipSeqs.has(Number(row.seq)))
+      .filter((row) => !excludeKeys.has(`${row.sid}:${row.seq}`));
     globalItems.push(...pickRounds(rows, { budget: maxChars, rawRounds: raw, rawChars, oldChars, sid }));
   }
 
@@ -405,7 +409,10 @@ export function renderStack(
     // 旧会话恢复后不可比。调用方从 session.surface 尾部取 seq 传进来。
     const skipSeqs = new Set((Array.isArray(excludeSeqs) ? excludeSeqs : []).map((seq) => Number(seq)));
     const rows = readSessionRows(db, sid).filter(
-      (row) => !keys.has(`${row.sid}:${row.seq}`) && !skipSeqs.has(Number(row.seq)),
+      (row) =>
+        !keys.has(`${row.sid}:${row.seq}`) &&
+        !skipSeqs.has(Number(row.seq)) &&
+        !excludeKeys.has(`${row.sid}:${row.seq}`),
     );
     // 全局段没装满的额度不浪费，交给本会话——接上最需要的本来就是最近这几轮。
     const localBudgetNow = Math.max(localBudget, Math.max(0, maxChars - usedGlobal));
@@ -436,6 +443,33 @@ export function stackQueryText(db, { limit = 2, chars = 80 } = {}) {
     .map((row) => clip(row.summary || row.text, chars))
     .filter(Boolean)
     .join('\n');
+}
+
+/**
+ * 面板用的栈快照：栈里最近的 N 条，按时间新→旧，只带人能读的正文。
+ * 和 renderStack 不同，这里不按预算裁剪、也不排 surface——面板要的是
+ * 「栈里现在有什么」，好让人决定删哪条。
+ * @param {import('node:sqlite').DatabaseSync} db
+ * @param {{sid?:string, limit?:number}} [options]
+ */
+export function stackSnapshot(db, { sid = '', limit = 50 } = {}) {
+  const rows = db
+    .prepare(
+      `SELECT s.sid, s.seq, s.t, s.summary, t.role, t.text
+       FROM context_stack s
+       LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
+       ORDER BY s.t DESC, s.id DESC
+       LIMIT ?`,
+    )
+    .all(Math.max(1, Math.floor(Number(limit) || 50)));
+  return rows.map((row) => ({
+    sid: row.sid,
+    seq: row.seq,
+    t: row.t,
+    role: row.role ?? '',
+    text: row.text ? clip(plainText(row.text), 400) : String(row.summary ?? ''),
+    local: Boolean(sid) && String(row.sid) === String(sid),
+  }));
 }
 
 /**

@@ -215,6 +215,9 @@ window.__ModuleLoader__.load({
       const [info, setInfo] = React.useState('');
       const [leftPick, setLeftPick] = React.useState('');
       const [rightPick, setRightPick] = React.useState('');
+      const [stackPick, setStackPick] = React.useState('');
+      const [confirmDelete, setConfirmDelete] = React.useState(false);
+      const [limitDraft, setLimitDraft] = React.useState(30);
 
       const load = React.useCallback(() => {
         call('state')
@@ -228,6 +231,11 @@ window.__ModuleLoader__.load({
       React.useEffect(() => {
         load();
       }, [load]);
+
+      // 以服务端为准同步滑条；本地拖动期间不覆盖（只在 state 更新时同步一次）。
+      React.useEffect(() => {
+        if (state && Number.isFinite(state.stackLimit)) setLimitDraft(state.stackLimit);
+      }, [state]);
 
       const toggle = async (key) => {
         if (!state || busy) return;
@@ -273,6 +281,46 @@ window.__ModuleLoader__.load({
         try {
           const res = await call('context');
           setInfo(`已写入并用记事本打开 ${res.path}（${res.chars} 字）`);
+        } catch (e) {
+          setError(String(e && e.message ? e.message : e));
+        } finally {
+          setBusy('');
+        }
+      };
+
+      // 滑条拖动时只改本地，松手才写盘——避免拖动过程里打十几次 RPC。
+      const commitLimit = async () => {
+        if (!state || busy) return;
+        const n = Number(limitDraft);
+        if (!Number.isFinite(n) || n === state.stackLimit) return;
+        setBusy('STACK_LIMIT');
+        setError('');
+        try {
+          const next = await call('set', { key: 'STACK_LIMIT', value: String(n) });
+          setState(next);
+        } catch (e) {
+          setError(String(e && e.message ? e.message : e));
+        } finally {
+          setBusy('');
+        }
+      };
+
+      const removeStack = async () => {
+        if (!state || !stackPick || busy) return;
+        if (!confirmDelete) {
+          setConfirmDelete(true);
+          return;
+        }
+        const at = stackPick.lastIndexOf(':');
+        const sid = stackPick.slice(0, at);
+        const seq = Number(stackPick.slice(at + 1));
+        setBusy('STACK_DELETE');
+        setError('');
+        try {
+          await call('stack-delete', { sid, seq });
+          await load();
+          setStackPick('');
+          setConfirmDelete(false);
         } catch (e) {
           setError(String(e && e.message ? e.message : e));
         } finally {
@@ -456,6 +504,70 @@ window.__ModuleLoader__.load({
         ),
       ];
 
+      const stackEntries = state && Array.isArray(state.stackEntries) ? state.stackEntries : [];
+      const stackRows = stackEntries.map((entry) => {
+        const pick = `${entry.sid}:${entry.seq}`;
+        const selected = pick === stackPick;
+        return h(
+          'div',
+          {
+            key: pick,
+            onClick: () => {
+              setStackPick(pick);
+              setConfirmDelete(false);
+            },
+            style: {
+              padding: '6px 8px',
+              marginBottom: 4,
+              borderRadius: 4,
+              cursor: 'pointer',
+              background: selected ? 'rgba(79,140,255,0.16)' : 'transparent',
+              border: `1px solid ${selected ? accent : 'transparent'}`,
+              fontSize: 12,
+              maxHeight: 120,
+              overflow: 'hidden',
+            },
+          },
+          [
+            h(
+              'div',
+              { key: 'm', style: { fontSize: 10, color: text2 } },
+              `${entry.role === 'user' ? '用户' : entry.role === 'assistant' ? '助手' : '工具'} · ${String(entry.sid).slice(-6)} · #${entry.seq}`,
+            ),
+            h(
+              'div',
+              { key: 't', style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' } },
+              entry.text,
+            ),
+          ],
+        );
+      });
+      const stackIndex = stackEntries.map((entry) => {
+        const pick = `${entry.sid}:${entry.seq}`;
+        const selected = pick === stackPick;
+        return h(
+          'div',
+          {
+            key: pick,
+            onClick: () => {
+              setStackPick(pick);
+              setConfirmDelete(false);
+            },
+            style: {
+              padding: '4px 8px',
+              marginBottom: 2,
+              borderRadius: 4,
+              cursor: 'pointer',
+              fontSize: 11,
+              background: selected ? 'rgba(79,140,255,0.16)' : 'transparent',
+              border: `1px solid ${selected ? accent : 'transparent'}`,
+              color: text2,
+            },
+          },
+          entry.local ? `本会话 #${entry.seq}` : `${String(entry.sid).slice(-6)} #${entry.seq}`,
+        );
+      });
+
       const debugPage = [
         h(
           'p',
@@ -472,6 +584,88 @@ window.__ModuleLoader__.load({
             onClick: () => toggle(layer.key),
           }),
         ),
+        h(
+          'div',
+          { key: 'stack-head', style: { marginTop: 20, paddingTop: 16, borderTop: `1px solid ${line}` } },
+          [
+            h('div', { key: 't', style: { fontWeight: 600, marginBottom: 4 } }, '栈可视化'),
+            h(
+              'div',
+              { key: 'd', style: { fontSize: 11, color: text2, marginBottom: 10 } },
+              '上面是最新入栈，下面是最旧。滑条控制「多少条进入全局注入」，改完点「应用」才写盘；删掉的行只不进注入，原文不动。',
+            ),
+            h(
+              'div',
+              { key: 'limit', style: { display: 'flex', alignItems: 'center', gap: 10 } },
+              [
+                h('span', { key: 'l', style: { fontSize: 12, color: text2 } }, '进注入的条数'),
+                h('input', {
+                  key: 'r',
+                  type: 'range',
+                  min: 30,
+                  max: 50,
+                  step: 1,
+                  value: limitDraft,
+                  disabled: state === null || busy === 'STACK_LIMIT',
+                  onChange: (e) => setLimitDraft(Number(e.target.value)),
+                  style: { width: 200 },
+                }),
+                h('span', { key: 'v', style: { fontSize: 12, minWidth: 24 } }, String(limitDraft)),
+                h(
+                  'button',
+                  {
+                    key: 'apply',
+                    type: 'button',
+                    disabled: state === null || busy === 'STACK_LIMIT' || !state || limitDraft === state.stackLimit,
+                    onClick: commitLimit,
+                    style: {
+                      padding: '2px 10px',
+                      borderRadius: 6,
+                      border: `1px solid ${state && limitDraft !== state.stackLimit ? accent : line}`,
+                      background: 'transparent',
+                      color: state && limitDraft !== state.stackLimit ? accent : text2,
+                      fontSize: 11,
+                      cursor: busy === 'STACK_LIMIT' ? 'default' : 'pointer',
+                      opacity: state && limitDraft !== state.stackLimit ? 1 : 0.5,
+                    },
+                  },
+                  busy === 'STACK_LIMIT' ? '应用中…' : '应用',
+                ),
+              ],
+            ),
+          ],
+        ),
+        h('div', { key: 'stack-cols', style: { display: 'flex', gap: 10, marginTop: 10 } }, [
+          h('div', { key: 'left', style: { flex: '2 2 0', minWidth: 0, maxHeight: 320, overflow: 'auto' } }, stackRows),
+          h('div', { key: 'right', style: { flex: '1 1 0', minWidth: 0, maxHeight: 320, overflow: 'auto' } }, stackIndex),
+        ]),
+        h('div', { key: 'stack-del', style: { marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' } }, [
+          h(
+            'button',
+            {
+              key: 'del',
+              type: 'button',
+              disabled: !stackPick || busy === 'STACK_DELETE',
+              onClick: removeStack,
+              style: {
+                padding: '4px 10px',
+                borderRadius: 6,
+                border: `1px solid ${confirmDelete ? '#e5484d' : stackPick ? accent : line}`,
+                background: 'transparent',
+                color: confirmDelete ? '#e5484d' : stackPick ? accent : text2,
+                fontSize: 12,
+                cursor: stackPick ? 'pointer' : 'default',
+                opacity: stackPick ? 1 : 0.5,
+              },
+            },
+            confirmDelete ? '确认删除？' : '删掉这一条栈',
+          ),
+          h(
+            'span',
+            { key: 'hint', style: { fontSize: 11, color: text2 } },
+            stackPick ? '只影响注入，原文还在库里。' : '先在右边选一条。',
+          ),
+        ]),
       ];
 
       return h(

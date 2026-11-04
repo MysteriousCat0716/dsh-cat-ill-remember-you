@@ -19,7 +19,7 @@ import {
   REPLACE_BLACKLIST_FILE,
   AUTO_BLACKLIST_FILE,
 } from './shadow-v2.js';
-import { backfillStack, renderStack, stackQueryText } from './context-stack.js';
+import { backfillStack, renderStack, stackQueryText, stackSnapshot } from './context-stack.js';
 import { renderPersona } from './persona.js';
 import { renderPeople } from './people.js';
 import { setOriginalsLogger } from './originals.js';
@@ -265,6 +265,24 @@ export function apply(ctx) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, text, 'utf8');
   };
+  // 栈的条数上限与「手工删掉的栈行」。后者按 sid:seq 记——seq 只在会话内唯一，
+  // 跨会话按 seq 会误伤；删的是「进不进注入」，turns 里的原文一个字不动。
+  const STACK_LIMIT_FILE = path.join(os.homedir(), '.dsh', 'cache', 'stack-limit.txt');
+  const STACK_EXCLUDE_FILE = path.join(os.homedir(), '.dsh', 'cache', 'stack-exclude.txt');
+  const STACK_LIMIT_MIN = 30;
+  const STACK_LIMIT_MAX = 50;
+  const readStackLimit = () => {
+    const raw = Number.parseInt(readSmall(STACK_LIMIT_FILE), 10);
+    if (!Number.isFinite(raw)) return STACK_LIMIT_MIN;
+    return Math.min(STACK_LIMIT_MAX, Math.max(STACK_LIMIT_MIN, raw));
+  };
+  const readStackExclude = () =>
+    new Set(
+      readSmall(STACK_EXCLUDE_FILE)
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean),
+    );
   // 全局开关、黑名单、自动黑名单都是磁盘文件：面板只读写，不在内存另存一份状态。
   const readGlobalReplace = () => readSmall(REPLACE_MODE_FILE) === 'on';
   const writeBlacklist = (lines) => {
@@ -347,7 +365,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.31',
+    version: '0.8.32',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -360,6 +378,15 @@ export function apply(ctx) {
     blacklist: blacklistLines(),
     sessions: sessionList(),
     contextLog: CONTEXT_LOG,
+    stackLimit: readStackLimit(),
+    stackEntries: (() => {
+      try {
+        const db = currentStore();
+        return db ? stackSnapshot(db, { limit: STACK_LIMIT_MAX }) : [];
+      } catch {
+        return [];
+      }
+    })(),
   });
   const LAYER_KEYS = ['STACK', 'PERSONA', 'PEOPLE', 'RECALL', 'ENRICH'];
   // connection.rpc.handle 内部要 webServer.register，owner ctx 必须连 webServer 一起注入
@@ -374,6 +401,15 @@ export function apply(ctx) {
         if (endpoint === 'set') {
           const key = String(input?.key ?? '');
           const value = input?.value;
+          // 栈条数上限是数字，不是 on/off，先单独接住。
+          if (key === 'STACK_LIMIT') {
+            const n = Number.parseInt(String(value ?? ''), 10);
+            if (!Number.isFinite(n)) throw new Error('STACK_LIMIT 只接受数字');
+            const clamped = Math.min(STACK_LIMIT_MAX, Math.max(STACK_LIMIT_MIN, n));
+            writeSmall(STACK_LIMIT_FILE, `${clamped}\n`);
+            log(`panel: stack limit ${clamped}`);
+            return { ok: true, value: panelState() };
+          }
           if (value !== 'on' && value !== 'off') throw new Error('value 只接受 on / off');
           // 通常设置：全局替换开关与「新会话自动拉黑」，都落在磁盘上，重启不丢。
           if (key === 'REPLACE') {
@@ -401,6 +437,17 @@ export function apply(ctx) {
             : (current.includes(sid) ? current : [...current, sid]);
           writeBlacklist(next);
           log(`panel: blacklist ${input?.action ?? 'add'} ${sid}`);
+          return { ok: true, value: panelState() };
+        }
+        if (endpoint === 'stack-delete') {
+          // 只把这一行从「进注入」里摘掉，turns 里的原文不动；想恢复就删这一行文件。
+          const sid = String(input?.sid ?? '');
+          const seq = Number(input?.seq);
+          if (!sid || !Number.isFinite(seq)) throw new Error('sid / seq 不能为空');
+          const current = readStackExclude();
+          current.add(`${sid}:${seq}`);
+          writeSmall(STACK_EXCLUDE_FILE, `${[...current].join('\n')}\n`);
+          log(`panel: stack delete ${sid}:${seq}`);
           return { ok: true, value: panelState() };
         }
         if (endpoint === 'context') {
@@ -436,7 +483,12 @@ export function apply(ctx) {
                 .filter((seq) => Number.isFinite(seq) && seq > 0)
                 .slice(-6);
               if (stackOn) {
-                const stacked = renderStack(db, { sid, excludeSeqs: surfaceSeqs });
+                const stacked = renderStack(db, {
+                  sid,
+                  excludeSeqs: surfaceSeqs,
+                  limit: readStackLimit(),
+                  excludeKeys: readStackExclude(),
+                });
                 if (stacked) {
                   parts.push(
                     replaceMode(sid) === 'off'
@@ -639,7 +691,12 @@ export function apply(ctx) {
           .map((node) => Number(node?.seq))
           .filter((seq) => Number.isFinite(seq) && seq > 0)
           .slice(-6);
-        const stacked = renderStack(db, { sid, excludeSeqs: surfaceSeqs });
+        const stacked = renderStack(db, {
+          sid,
+          excludeSeqs: surfaceSeqs,
+          limit: readStackLimit(),
+          excludeKeys: readStackExclude(),
+        });
         if (stacked) {
           const mode = replaceMode(sid);
           const body =
