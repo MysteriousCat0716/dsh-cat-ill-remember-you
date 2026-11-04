@@ -53,6 +53,7 @@ window.__ModuleLoader__.load({
 
     const text1 = 'var(--dsw-alias-text-1, inherit)';
     const text2 = 'var(--dsw-alias-text-2, rgba(255,255,255,0.62))';
+    const text3 = 'var(--dsw-alias-text-3, rgba(255,255,255,0.42))';
     const line = 'var(--dsw-alias-border-1, rgba(255,255,255,0.12))';
     const accent = 'var(--dsw-alias-accent-1, #4f8cff)';
     const bg2 = 'var(--dsw-alias-bg-2, rgba(255,255,255,0.04))';
@@ -572,9 +573,32 @@ window.__ModuleLoader__.load({
               background: selected ? 'rgba(79,140,255,0.16)' : 'transparent',
               border: `1px solid ${selected ? accent : 'transparent'}`,
               color: text2,
+              display: 'flex',
+              alignItems: 'baseline',
+              gap: 8,
             },
           },
-          entry.local ? `本会话 #${entry.seq}` : `${labelOf(entry)} #${entry.seq}`,
+          h(
+            'span',
+            {
+              key: 'name',
+              style: {
+                flex: '1 1 auto',
+                minWidth: 0,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                textAlign: 'left',
+                color: entry.archived ? text3 : text2,
+              },
+            },
+            entry.local ? '本会话' : labelOf(entry),
+          ),
+          h(
+            'span',
+            { key: 'seq', style: { flex: '0 0 auto', color: text3 } },
+            `#${entry.seq}`,
+          ),
         );
       });
 
@@ -678,7 +702,6 @@ window.__ModuleLoader__.load({
                 borderRadius: 8,
                 background: bg2,
                 padding: 4,
-                textAlign: 'right',
               },
             },
             stackIndex,

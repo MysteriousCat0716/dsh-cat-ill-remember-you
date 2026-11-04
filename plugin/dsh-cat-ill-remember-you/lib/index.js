@@ -388,7 +388,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.34',
+    version: '0.8.35',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
