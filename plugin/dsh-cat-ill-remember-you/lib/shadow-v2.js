@@ -38,8 +38,8 @@ export const MAX_REPLACE_CHARS = 1500;
 // 同一会话两次真替换之间的冷却。每轮都改前缀会让缓存每轮失效。
 export const REPLACE_COOLDOWN_MS = 3 * 60 * 1000;
 
-// 滚动替换（P1）：不再等窗口满一次换掉 40%，而是每次只动最早 STEP 条，
-// 最近 KEEP_TAIL 条永远是原文。条数或字数任一超线就跑。
+// 滚动替换（P1）：不再等窗口满一次换掉 40%，而是每次只动最早 STEP 条。
+// 保留区按「轮」算（最后一条 user 起）；ROLL_KEEP_TAIL 只在一条 user 都没有时兜底。
 export const ROLL_KEEP_TAIL = 6;
 export const ROLL_STEP = 4;
 export const ROLL_SOFT_BUDGET = 6000;
@@ -66,6 +66,17 @@ function envInt(name, fallback) {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 export const REFERRAL = /(那个|这个|它|上面|刚才|之前|前面|上次|这里|那些|这些|这事|那句)/;
+
+/**
+ * 保留区按「轮」算：从最后一条 user 起，到末尾全留原文。
+ * 多步回复里最后几条常常是 assistant，按条数留会把当前提问换进区间。
+ */
+export function lastUserIndex(entries) {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    if (entries[i].role === 'user') return i;
+  }
+  return -1;
+}
 
 // 替换块是模型唯一能看到的旧历史。定长取前 N 字会把结论砍掉（缺陷文档第 1 条
 // 有实证：seq 414 / 399 的结论都在后三分之一）。改成保首句 + 保尾句，中段按句
@@ -586,13 +597,7 @@ export function planShadowV2(
     // 保留区按「轮」算，不按条数：从最后一条 user 起，到末尾全部留原文。
     // 旧的 FULL_KEEP_TAIL=2 在多步回复里会把当前 user 换进区间——最后两条
     // 常常是两条 assistant，模型就看不到你刚说的话了。
-    let keepFrom = -1;
-    for (let i = entries.length - 1; i >= 0; i -= 1) {
-      if (entries[i].role === 'user') {
-        keepFrom = i;
-        break;
-      }
-    }
+    let keepFrom = lastUserIndex(entries);
     // 一条 user 都没有（比如刚加载）：退回按条数保留。
     if (keepFrom < 0) keepFrom = Math.max(0, entries.length - FULL_KEEP_TAIL);
     if (keepFrom <= 0) return null;
@@ -623,14 +628,17 @@ export function planShadowV2(
     kept = entries.slice(keepFrom);
   } else if (roll) {
     if (entries.length <= MIN_ENTRIES) return null;
-    // 滚动模式：只动最早 STEP 条，最近 KEEP_TAIL 条永远是原文。
-    if (entries.length <= ROLL_KEEP_TAIL) return null;
+    // 滚动模式：只动最早 STEP 条。保留区按「轮」算而不是按条数——
+    // 旧逻辑固定留最近 6 条，7 步以上的超长工具轮会把当前提问换进区间。
+    let keepFrom = lastUserIndex(entries);
+    if (keepFrom < 0) keepFrom = Math.max(0, entries.length - ROLL_KEEP_TAIL);
+    if (keepFrom <= 0) return null;
     const totalChars = entries.reduce((total, entry) => total + entry.text.length, 0);
-    const overCount = entries.length > ROLL_KEEP_TAIL + ROLL_STEP;
+    const early = entries.slice(0, keepFrom);
+    const overCount = early.length > ROLL_STEP;
     if (!overCount && totalChars <= ROLL_SOFT_BUDGET) return null;
-    const early = entries.slice(0, entries.length - ROLL_KEEP_TAIL);
     replaced = early.slice(0, ROLL_STEP);
-    kept = [...early.slice(ROLL_STEP), ...entries.slice(entries.length - ROLL_KEEP_TAIL)];
+    kept = [...early.slice(ROLL_STEP), ...entries.slice(keepFrom)];
   } else {
     // 旧逻辑兜底：按比例保留，一次换掉更早的一段。
     const keepCount = resolveKeep(entries.length, keep);

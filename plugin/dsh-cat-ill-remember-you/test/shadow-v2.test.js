@@ -100,6 +100,7 @@ beforeEach(() => {
     'sid-abc',
     'sid-w',
     'sid-roll',
+    'sid-roll-long',
     'sid-chars',
     'sid-env',
     'sid-env-bad',
@@ -233,8 +234,26 @@ test('planShadowV2: 滚动模式只换最早 4 条，最近 6 条原文不动', 
   assert.ok(plan);
   assert.equal(plan.rangeStart, 1);
   assert.equal(plan.rangeEnd, 4);
-  // 未换的早段 2 条 + 最近 6 条
+  // 未换的早段 6 条 + 最后一轮 2 条（保留区按轮算）
   assert.equal(plan.kept, 8);
+  db.close();
+});
+
+test('planShadowV2: 滚动模式按轮保留，超长工具轮不改当前提问', () => {
+  const db = openStore(':memory:');
+  // 最后一条 user 在 index 3，后面 12 条全是 assistant（超长工具轮）。
+  // 旧的「留最近 6 条」会把这条 user 换进区间，模型就看不到当前提问了。
+  const entries = Array.from({ length: 16 }, (_, i) => [
+    i + 1,
+    i === 3 ? 'user' : 'assistant',
+    'x'.repeat(400),
+  ]);
+  const session = fakeSession(entries, 'sid-roll-long');
+  const plan = planShadowV2(session, db, { now: 1 });
+  assert.ok(plan);
+  // 区间只到 index 2（seq 3），当前提问 seq 4 不进区间。
+  assert.equal(plan.rangeEnd, 3);
+  assert.equal(plan.kept, 13);
   db.close();
 });
 
@@ -369,8 +388,9 @@ test('planShadowV2: 字数超预算时条数不够也换（只换得动最早那
   const plan = planShadowV2(session, db, { now: 1 });
   assert.ok(plan);
   assert.equal(plan.rangeStart, 1);
-  assert.equal(plan.rangeEnd, 2);
-  assert.equal(plan.kept, 6);
+  // 保留区按轮算（最后一轮 2 条 + STEP 之后未换的 2 条），仍只动最早 4 条。
+  assert.equal(plan.rangeEnd, 4);
+  assert.equal(plan.kept, 4);
   db.close();
 });
 
