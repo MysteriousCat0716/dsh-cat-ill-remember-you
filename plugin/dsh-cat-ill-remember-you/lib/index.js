@@ -282,7 +282,7 @@ export function apply(ctx) {
         .prepare(
           `SELECT t.sid AS sid, MAX(t.t) AS last, COUNT(*) AS n,
              (SELECT text FROM turns WHERE sid = t.sid AND role = 'user' ORDER BY seq LIMIT 1) AS first
-           FROM turns t WHERE t.origin = 'chat' GROUP BY t.sid ORDER BY last DESC LIMIT 300`,
+           FROM turns t WHERE t.origin = 'chat' GROUP BY t.sid HAVING SUM(CASE WHEN t.role = 'user' THEN 1 ELSE 0 END) > 0 ORDER BY last DESC LIMIT 300`,
         )
         .all();
       return rows.map((row) => ({
@@ -298,7 +298,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.27',
+    version: '0.8.28',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
