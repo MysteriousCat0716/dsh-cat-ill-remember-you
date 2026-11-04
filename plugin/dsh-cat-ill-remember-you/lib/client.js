@@ -218,6 +218,8 @@ window.__ModuleLoader__.load({
       const [rightPick, setRightPick] = React.useState('');
       const [stackPick, setStackPick] = React.useState('');
       const [confirmDelete, setConfirmDelete] = React.useState(false);
+      const [bulkMode, setBulkMode] = React.useState(false);
+      const [bulkPicks, setBulkPicks] = React.useState([]);
       const [limitDraft, setLimitDraft] = React.useState(30);
 
       const load = React.useCallback(() => {
@@ -307,20 +309,23 @@ window.__ModuleLoader__.load({
       };
 
       const removeStack = async () => {
-        if (!state || !stackPick || busy) return;
+        const picks = bulkMode ? bulkPicks : stackPick ? [stackPick] : [];
+        if (!state || picks.length === 0 || busy) return;
         if (!confirmDelete) {
           setConfirmDelete(true);
           return;
         }
-        const at = stackPick.lastIndexOf(':');
-        const sid = stackPick.slice(0, at);
-        const seq = Number(stackPick.slice(at + 1));
+        const items = picks.map((pick) => {
+          const at = pick.lastIndexOf(':');
+          return { sid: pick.slice(0, at), seq: Number(pick.slice(at + 1)) };
+        });
         setBusy('STACK_DELETE');
         setError('');
         try {
-          await call('stack-delete', { sid, seq });
+          await call('stack-delete', { items });
           await load();
           setStackPick('');
+          setBulkPicks([]);
           setConfirmDelete(false);
         } catch (e) {
           setError(String(e && e.message ? e.message : e));
@@ -520,7 +525,15 @@ window.__ModuleLoader__.load({
       // 左栏一次只画选中的那一条：全铺开时条目一多就挤成一片，右边序号才是浏览的地方。
       const pickedEntry =
         stackEntries.find((entry) => `${entry.sid}:${entry.seq}` === stackPick) || null;
-      const stackRows = pickedEntry
+      const stackRows = bulkMode
+        ? [
+            h(
+              'div',
+              { key: 'bulk', style: { color: text2, fontSize: 12, padding: '12px 4px', lineHeight: 1.7 } },
+              `批量选择中：左栏不显示预览。在右边点条目选中，再点一次取消；已选 ${bulkPicks.length} 条。`,
+            ),
+          ]
+        : pickedEntry
         ? [
             h(
               'div',
@@ -555,12 +568,19 @@ window.__ModuleLoader__.load({
           ];
       const stackIndex = stackEntries.map((entry) => {
         const pick = `${entry.sid}:${entry.seq}`;
-        const selected = pick === stackPick;
+        const selected = bulkMode ? bulkPicks.includes(pick) : pick === stackPick;
         return h(
           'div',
           {
             key: pick,
             onClick: () => {
+              if (bulkMode) {
+                setBulkPicks((prev) =>
+                  prev.includes(pick) ? prev.filter((item) => item !== pick) : [...prev, pick],
+                );
+                setConfirmDelete(false);
+                return;
+              }
               setStackPick(pick);
               setConfirmDelete(false);
             },
@@ -707,31 +727,70 @@ window.__ModuleLoader__.load({
             stackIndex,
           ),
         ]),
-        h('div', { key: 'stack-del', style: { marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' } }, [
+        h('div', { key: 'stack-del', style: { marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' } }, [
           h(
             'button',
             {
               key: 'del',
               type: 'button',
-              disabled: !stackPick || busy === 'STACK_DELETE',
+              disabled:
+                busy === 'STACK_DELETE' ||
+                (bulkMode ? bulkPicks.length === 0 : !stackPick),
               onClick: removeStack,
               style: {
                 padding: '4px 10px',
                 borderRadius: 6,
-                border: `1px solid ${confirmDelete ? '#e5484d' : stackPick ? accent : line}`,
+                border: `1px solid ${confirmDelete ? '#e5484d' : (bulkMode ? bulkPicks.length : stackPick) ? accent : line}`,
                 background: 'transparent',
-                color: confirmDelete ? '#e5484d' : stackPick ? accent : text2,
+                color: confirmDelete ? '#e5484d' : (bulkMode ? bulkPicks.length : stackPick) ? accent : text2,
                 fontSize: 12,
-                cursor: stackPick ? 'pointer' : 'default',
-                opacity: stackPick ? 1 : 0.5,
+                cursor: (bulkMode ? bulkPicks.length : stackPick) ? 'pointer' : 'default',
+                opacity: (bulkMode ? bulkPicks.length : stackPick) ? 1 : 0.5,
               },
             },
-            confirmDelete ? '确认删除？' : '删掉这一条栈',
+            confirmDelete
+              ? '确认删除？'
+              : bulkMode
+                ? `删掉选中的 ${bulkPicks.length} 条`
+                : '删掉这一条栈',
+          ),
+          h(
+            'label',
+            {
+              key: 'bulk',
+              style: {
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 12,
+                color: bulkMode ? accent : text2,
+                cursor: 'pointer',
+                userSelect: 'none',
+              },
+            },
+            [
+              h('input', {
+                key: 'c',
+                type: 'checkbox',
+                checked: bulkMode,
+                onChange: (e) => {
+                  setBulkMode(e.target.checked);
+                  setBulkPicks([]);
+                  setStackPick('');
+                  setConfirmDelete(false);
+                },
+              }),
+              '批量选择',
+            ],
           ),
           h(
             'span',
             { key: 'hint', style: { fontSize: 11, color: text2 } },
-            stackPick ? '只影响注入，原文还在库里。' : '先在右边选一条。',
+            bulkMode
+              ? '点条目选中，再点一次取消。'
+              : stackPick
+                ? '只影响注入，原文还在库里。'
+                : '先在右边选一条。',
           ),
         ]),
       ];

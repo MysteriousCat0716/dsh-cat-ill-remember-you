@@ -388,7 +388,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.35',
+    version: '0.8.36',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -468,14 +468,23 @@ export function apply(ctx) {
           return { ok: true, value: panelState() };
         }
         if (endpoint === 'stack-delete') {
-          // 只把这一行从「进注入」里摘掉，turns 里的原文不动；想恢复就删这一行文件。
-          const sid = String(input?.sid ?? '');
-          const seq = Number(input?.seq);
-          if (!sid || !Number.isFinite(seq)) throw new Error('sid / seq 不能为空');
+          // 只把选中的行从「进注入」里摘掉，turns 里的原文不动；想恢复就删对应行。
+          // 支持单条（{ sid, seq }）与批量（{ items: [{ sid, seq }] }）。
+          const items = Array.isArray(input?.items)
+            ? input.items
+            : [{ sid: input?.sid, seq: input?.seq }];
           const current = readStackExclude();
-          current.add(`${sid}:${seq}`);
+          let added = 0;
+          for (const item of items) {
+            const sid = String(item?.sid ?? '');
+            const seq = Number(item?.seq);
+            if (!sid || !Number.isFinite(seq)) continue;
+            current.add(`${sid}:${seq}`);
+            added += 1;
+          }
+          if (added === 0) throw new Error('sid / seq 不能为空');
           writeSmall(STACK_EXCLUDE_FILE, `${[...current].join('\n')}\n`);
-          log(`panel: stack delete ${sid}:${seq}`);
+          log(`panel: stack delete ${added} 条`);
           return { ok: true, value: panelState() };
         }
         if (endpoint === 'context') {
