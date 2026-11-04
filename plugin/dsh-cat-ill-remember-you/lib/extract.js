@@ -192,9 +192,14 @@ function coreOf(text, n) {
  * A retrievable one-liner: the human's point + what the assistant settled.
  * Rule-based until a real summarizer replaces it.
  */
+/** 围栏块（代码、dsh-ui 卡片）说的是界面，不是对话内容；进摘要只会变成噪音。 */
+function withoutFences(text) {
+  return String(text ?? '').replace(/```[\s\S]*?(?:```|$)/g, ' ');
+}
+
 function digestOf(userText, botText) {
-  const ask = coreOf(userText, 60);
-  const answer = coreOf(botText, 90);
+  const ask = coreOf(withoutFences(userText), 60);
+  const answer = coreOf(withoutFences(botText), 90);
   if (ask && answer) return `问：${ask}｜答：${answer}`;
   return ask || answer;
 }

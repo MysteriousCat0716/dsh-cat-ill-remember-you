@@ -166,6 +166,22 @@ test('candidateOf: subject follows the summary source', () => {
   assert.equal(botOnly.subject, 'assistant');
 });
 
+test('candidateOf: 围栏里的 UI 卡片不进摘要', () => {
+  const c = candidateOf({
+    turns: [
+      turn({ role: 'user', text: '把人格部分放大吧，灵魂不该被压缩概括。' }),
+      turn({
+        id: 2,
+        role: 'assistant',
+        text: '```dsh-ui\n{"title":"人格两版","items":[{"type":"text","content":"A 版全量搬进 AGENTS"}]}\n```\n这两版的差别在搬法，不在条目。',
+      }),
+    ],
+  });
+  assert.ok(!c.summary.includes('dsh-ui'), c.summary);
+  assert.ok(!c.summary.includes('{"title"'), c.summary);
+  assert.ok(c.summary.includes('搬法'), c.summary);
+});
+
 test('candidateOf: 用户只说半句、内容主要来自助手时标 reported', () => {
   const c = candidateOf({
     turns: [
