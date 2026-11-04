@@ -504,6 +504,16 @@ window.__ModuleLoader__.load({
         ),
       ];
 
+      // 右栏用会话名而不是只有码：人认会话靠名字，码只在重名时用来分。
+      const sessionNames = new Map(
+        ((state && state.sessions) || []).map((item) => [item.sid, String(item.title || '').trim()]),
+      );
+      const labelOf = (sid) => {
+        const code = String(sid).slice(-6);
+        const name = sessionNames.get(sid) || '';
+        if (!name) return code;
+        return `${name.length > 14 ? `${name.slice(0, 14)}…` : name} · ${code}`;
+      };
       const stackEntries = state && Array.isArray(state.stackEntries) ? state.stackEntries : [];
       // 左栏一次只画选中的那一条：全铺开时条目一多就挤成一片，右边序号才是浏览的地方。
       const pickedEntry =
@@ -524,7 +534,7 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { key: 'm', style: { fontSize: 10.5, color: text2, marginBottom: 6 } },
-                  `${pickedEntry.role === 'user' ? '用户' : pickedEntry.role === 'assistant' ? '助手' : '工具'} · ${String(pickedEntry.sid).slice(-6)} · #${pickedEntry.seq}`,
+                  `${pickedEntry.role === 'user' ? '用户' : pickedEntry.role === 'assistant' ? '助手' : '工具'} · ${pickedEntry.local ? '本会话' : labelOf(pickedEntry.sid)} · #${pickedEntry.seq}`,
                 ),
                 h(
                   'div',
@@ -563,7 +573,7 @@ window.__ModuleLoader__.load({
               color: text2,
             },
           },
-          entry.local ? `本会话 #${entry.seq}` : `${String(entry.sid).slice(-6)} #${entry.seq}`,
+          entry.local ? `本会话 #${entry.seq}` : `${labelOf(entry.sid)} #${entry.seq}`,
         );
       });
 
