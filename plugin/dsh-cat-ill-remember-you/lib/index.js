@@ -11,6 +11,7 @@ import { shadowPlan, recordShadow } from './shadow.js';
 import { planShadowV2, replaceMode, setShadowLogger } from './shadow-v2.js';
 import { backfillStack, renderStack, stackQueryText } from './context-stack.js';
 import { renderPersona } from './persona.js';
+import { renderPeople } from './people.js';
 import { setOriginalsLogger } from './originals.js';
 import { backfillTurnCwd } from './backfill.js';
 import { forgetSweep } from './forget.js';
@@ -292,6 +293,18 @@ export function apply(ctx) {
 
       // 检索的 query = 栈里最近两条 + 这一句：只说「继续」时，栈负责说清在继续什么。
       const currentText = lastUserText(messages);
+
+      // 人物卡：按名字精确取，不参与语义检索——名字撞车比语义偏更糟。
+      // 放在 baseHint 之后：它依赖这一句提到了谁，不属于跨会话相同的那部分。
+      try {
+        const peopleText = renderPeople(db, currentText);
+        if (peopleText) {
+          hintParts.push(peopleText);
+          log(`people chars=${peopleText.length}`);
+        }
+      } catch (error) {
+        log(`people failed: ${error?.message ?? error}`);
+      }
       const recent = currentText
         ? recentTexts(messages).filter((text) => text !== currentText)
         : recentTexts(messages);
