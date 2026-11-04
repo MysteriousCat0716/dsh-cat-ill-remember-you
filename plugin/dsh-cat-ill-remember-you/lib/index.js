@@ -388,7 +388,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.37',
+    version: '0.8.38',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -406,10 +406,12 @@ export function apply(ctx) {
       try {
         const db = currentStore();
         return db
-          ? stackSnapshot(db, { limit: STACK_LIMIT_MAX }).map((entry) => ({
-              ...entry,
-              archived: isArchived(entry.sid),
-            }))
+          ? stackSnapshot(db, { limit: STACK_LIMIT_MAX })
+              .filter((entry) => !readStackExclude().has(`${entry.sid}:${entry.seq}`))
+              .map((entry) => ({
+                ...entry,
+                archived: isArchived(entry.sid),
+              }))
           : [];
       } catch {
         return [];
