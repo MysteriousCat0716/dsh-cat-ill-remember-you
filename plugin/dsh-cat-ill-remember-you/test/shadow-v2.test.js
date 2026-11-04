@@ -14,6 +14,7 @@ import {
   applyReplacement,
   planShadowV2,
   replaceMode,
+  keyTokens,
 } from '../lib/shadow-v2.js';
 
 /** 假 session：nodes 是 seq 数组，eventAt/deriveEventMessage 按 seq 取回。 */
@@ -291,7 +292,8 @@ test('planShadowV2: full 第二轮把旧替换块包进区间，原文从 turns 
   try {
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan);
-    // 区间从第一个 surface 节点起（含旧块），否则每轮都会在旧块后面再插一块。
+    // 区间按位置取端点：旧块 13 排在位置最前，所以 rangeStart=13、rangeEnd=10。
+    // 这不是时间区间，start > end 是正常的；applyReplacement 用 indexOf 找位置。
     assert.equal(plan.rangeStart, 13);
     assert.equal(plan.rangeEnd, 10);
     assert.equal(plan.kept, 2);
@@ -341,9 +343,10 @@ test('planShadowV2: full 模式按保留区过滤原文，不依赖 seq 单调',
   try {
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan);
+    // 区间按位置取端点：旧块 587 排在 571 前面，所以 rangeStart=587、rangeEnd=571。
     assert.equal(plan.rangeStart, 587);
     assert.equal(plan.rangeEnd, 571);
-    // 保留区是 579、605；571 虽然在 rangeEnd 上，也必须进原文。
+    // 保留区是 579、605；571 虽然在区间端点上，也必须进原文。
     assert.match(plan.text, /助手在 571 说的话/);
   } finally {
     restore();
@@ -773,4 +776,34 @@ test('planShadowV2: 工具结果在 spill 上时，索引写目录而不是 seq'
     cleanup();
     db.close();
   }
+});
+
+test('keyTokens: 代号与编号进关键词，纯数字区间不进', () => {
+  const tokens = keyTokens([
+    { seq: 1, role: 'user', text: '记住一个代号：青鸟-7，备用是 灰雀-3' },
+    { seq: 2, role: 'user', text: '我的第二个待办编号是 B-204' },
+    { seq: 3, role: 'assistant', text: '区间 8-2197，日期 2026-11-05，包名 dsh-cat-ill-remember-you' },
+  ]);
+  assert.ok(tokens.includes('青鸟-7'), `实际：${tokens.join('、')}`);
+  assert.ok(tokens.includes('灰雀-3'));
+  assert.ok(tokens.includes('B-204'));
+  assert.ok(!tokens.includes('8-2197'));
+  assert.ok(!tokens.includes('2026-11-05'));
+});
+
+test('renderReplacement: 预算紧张时先留用户的话，不先留助手的长过程', () => {
+  const entries = [];
+  for (let seq = 1; seq <= 8; seq += 1) {
+    const user = seq % 2 === 1;
+    entries.push({
+      seq,
+      role: user ? 'user' : 'assistant',
+      text: user
+        ? `用户第 ${seq} 条：代号 青鸟-${seq}`
+        : `助手第 ${seq} 条：${'过程描述'.repeat(120)}`,
+    });
+  }
+  const text = renderReplacement(entries, { maxChars: 600 });
+  assert.ok(text.includes('青鸟-1'), `最早的用户消息不该被助手的长文本挤掉：\n${text}`);
+  assert.ok(text.includes('青鸟-7'));
 });

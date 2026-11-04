@@ -272,41 +272,45 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note
     (note ? `${note}\n` : '');
   // 尾部那段说明也要占预算：它只在「塞不下」时出现，长度不可预知，先留 70 字。
   const limit = Math.max(80, maxChars - header.length - 10 - 70);
+  // 两遍填：先用户，后助手。
+  // 用户说的话信息密度最高——锚点、编号、约定、当前要问的事都在这里；
+  // 助手的长回复是过程。按时间从近到远填，预算不够时先舍助手。
   const picked = [];
+  const filled = new Set();
   let size = 0;
-  let skipped = 0;
-  // 从最近的老消息往回填：贴着保留区的细节更可能被下一轮接着用。
-  for (let index = list.length - 1; index >= 0; index -= 1) {
-    const entry = list[index];
-    const text = condense(entry);
-    if (!text) continue;
-    const prefix = entry.role === 'user' ? '用户' : '助手';
-    // 行首带 seq：既能看出谁先说谁后说，也能按号回查原文。
-    const line = `- [${entry.seq}] ${prefix}: ${text}`;
-    if (size + line.length + 1 > limit) {
-      // 塞不下就停，不往回跳过：跳着填会让块里只剩用户短句、助手长句全缺，
-      // 读起来是「一串用户」，时序也断了。宁可少留几条，也要留下连续的一段。
-      skipped += index + 1;
-      break;
+  for (const pass of ['user', 'assistant']) {
+    for (let index = list.length - 1; index >= 0; index -= 1) {
+      if (filled.has(index)) continue;
+      const entry = list[index];
+      if ((entry.role === 'user') !== (pass === 'user')) continue;
+      const text = condense(entry);
+      if (!text) continue;
+      const prefix = entry.role === 'user' ? '用户' : '助手';
+      // 行首带 seq：既能看出谁先说谁后说，也能按号回查原文。
+      const line = `- [${entry.seq}] ${prefix}: ${text}`;
+      if (size + line.length + 1 > limit) continue;
+      picked.push({ seq: entry.seq, line });
+      filled.add(index);
+      size += line.length + 1;
     }
-    picked.push(line);
-    size += line.length + 1;
   }
-  if (picked.length === 0) {
+  picked.sort((left, right) => left.seq - right.seq);
+  const lines = picked.map((item) => item.line);
+  if (lines.length === 0) {
     const entry = [...list].reverse().find((item) => condense(item));
     if (!entry) return header;
     const prefix = entry.role === 'user' ? '用户' : '助手';
-    picked.push(`- [${entry.seq}] ${prefix}: ${condense(entry).slice(0, Math.max(20, limit - 10))}`);
+    lines.push(`- [${entry.seq}] ${prefix}: ${condense(entry).slice(0, Math.max(20, limit - 10))}`);
   }
-  picked.reverse();
+  const skipped = list.length - lines.length;
   const tail =
     skipped > 0
       ? `\n（预算 ${maxChars} 字，更早的 ${skipped} 条没展开；它们只在关键词里，原文按 seq 回查。）`
       : '';
-  const out = header + picked.join('\n') + tail;
+  const out = header + lines.join('\n') + tail;
   if (out.length <= maxChars) return out;
   // 兜底：尾部说明可有可无，先去掉它；还超才硬截。
-  const body = header + picked.join('\n');
+  const body = header + lines.join('\n');
   if (body.length <= maxChars) return body;
   return `${body.slice(0, maxChars - 1)}…`;
 }
@@ -315,7 +319,13 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note
 export function keyTokens(entries) {
   const list = Array.isArray(entries) ? entries : [];
   const source = list.map((entry) => entry.text).join('\n');
+  // 代号/编号先收：`青鸟-7`、`B-204`、`赤狐-115` 这类「字母或汉字 + 连字符 + 数字」
+  // 实体/锚点抽取会漏掉它们，但它们恰恰是跨轮最需要认出的标识符。
+  // 纯数字区间（`8-2197`、`2026-11-05`）不会命中，因为开头必须是字母或汉字。
   const tokens = new Set();
+  for (const match of source.matchAll(/[A-Za-z\u4e00-\u9fa5][A-Za-z\u4e00-\u9fa5_]*-[0-9]{1,4}/g)) {
+    tokens.add(match[0]);
+  }
   for (const entity of entitiesOf(source)) tokens.add(entity);
   for (const anchor of anchorsOf(source)) tokens.add(anchor);
   return [...tokens];
@@ -661,6 +671,14 @@ export function planShadowV2(
       return null;
     }
     covered = nodes.slice(0, cutIndex);
+    if (covered.length === 0) {
+      if (dryRun) log(`preview: full covered empty cutIndex=${cutIndex}`);
+      return null;
+    }
+    // 区间按位置取端点，不按 seq 最小/最大：applyReplacement 用
+    // nodes.indexOf(fromSeq) / indexOf(toSeq) 找位置，端点必须跟着 surface
+    // 的顺序走。旧替换块的 seq 比它所在位置大，所以 rangeStart 可能大于
+    // rangeEnd——这是位置区间，不是时间区间，账本照记。
     rangeStart = covered[0];
     rangeEnd = covered.at(-1);
     // 热路径：每个 assistant 事件都会重新算计划，但窗口多半没动。区间没变
