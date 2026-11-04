@@ -568,3 +568,23 @@ test('retrieve: 常被真的用到的记忆，同等命中时排在前面', asyn
   assert.equal(hits[0].summary.includes('被用过'), true);
   db.close();
 });
+
+test('retrieve: 上次真的用过的记忆，注入行带「上次用在」', async () => {
+  const db = openStore(':memory:');
+  const memory = db
+    .prepare(
+      `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+       VALUES ('decision', '缓存层要换掉。', '缓存层要换掉', '[]', '["缓存"]', '规则提炼：decision', 'active', 1)`,
+    )
+    .run().lastInsertRowid;
+  db.prepare(`INSERT INTO recall_log (sid, turn, memory_id, why, used, t) VALUES (?, ?, ?, '', 1, ?)`).run(
+    'sid-old',
+    1,
+    memory,
+    1730000000000,
+  );
+  const hits = await retrieve(db, { text: '缓存怎么了', recent: [], now: 1730000001000, sid: 'sid-new' });
+  assert.ok(hits[0].lastUsed > 0);
+  assert.ok(renderHint(hits).includes('上次用在'));
+  db.close();
+});

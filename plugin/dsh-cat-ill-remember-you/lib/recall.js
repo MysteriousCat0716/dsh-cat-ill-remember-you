@@ -728,6 +728,29 @@ export async function retrieve(
   } catch {
     // 回升失败不影响这一轮取回：先让记忆拿回去用，账本下次再补。
   }
+  // 再巩固：把「上一次真的用到它」的时间带进注入行。
+  // 人想起来的时候带的是「我上次是在什么情况下想到这个的」，不是一条无时间的结论。
+  try {
+    const ids = picked.filter((hit) => hit.source === 'memory').map((hit) => Number(hit.id));
+    if (ids.length) {
+      const marks = ids.map(() => '?').join(',');
+      const rows = db
+        .prepare(
+          `SELECT memory_id, MAX(t) AS last FROM recall_log
+            WHERE memory_id IN (${marks}) AND used = 1 AND section = 'recall'
+            GROUP BY memory_id`,
+        )
+        .all(...ids);
+      const lastOf = new Map(rows.map((row) => [Number(row.memory_id), Number(row.last) || 0]));
+      for (const hit of picked) {
+        if (hit.source !== 'memory') continue;
+        const last = lastOf.get(Number(hit.id));
+        if (last) hit.lastUsed = last;
+      }
+    }
+  } catch {
+    // 老库没有 recall_log：不写时间，不影响注入。
+  }
   const result = [...persona, ...picked];
   result.trace = trace;
   result.personaCount = persona.length;
@@ -788,6 +811,12 @@ export function markRecallUsed(db, { sid, text }) {
   return marked;
 }
 
+function fmtShort(t) {
+  const d = new Date(Number(t));
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 export function renderHint(hits) {
   if (!hits || hits.length === 0) return '';
   const lines = [
@@ -813,7 +842,8 @@ export function renderHint(hits) {
       // 转发只给指针：别把别人写的论证当成我们的结论复述出去。
       const where =
         hit.kind === 'reference' ? '（原文在 turns，需要时用 session_event_search 取）' : '';
-      lines.push(`${index + 1}. （${kind}${when ? ` · ${when}` : ''}${conf}）${hit.summary}${where}`);
+      const lastUsed = hit.lastUsed ? `（上次用在 ${fmtShort(hit.lastUsed)}）` : '';
+      lines.push(`${index + 1}. （${kind}${when ? ` · ${when}` : ''}${conf}）${hit.summary}${where}${lastUsed}`);
       if (hit.scene) lines.push(`   当时：${hit.scene}`);
     });
   };
