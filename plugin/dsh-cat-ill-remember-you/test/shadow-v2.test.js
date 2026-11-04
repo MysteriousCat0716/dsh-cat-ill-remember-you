@@ -720,9 +720,59 @@ test('planShadowV2: full 模式压掉工具结果时，替换文本留一行索�
   try {
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan, 'full 模式应产出替换计划');
-    assert.match(plan.text, /工具结果 1 个：read@4/);
+    // 工具结果不再只有名字：一行摘要让模型知道那一步做了什么。
+    assert.match(plan.text, /工具结果 1 个：/);
+    assert.match(plan.text, /- read@4「很长的工具输出/);
   } finally {
     cleanup();
+    db.close();
+  }
+});
+
+test('planShadowV2: 引用指针形式的大结果，替换块里留完整 refId', () => {
+  const entries = [
+    [1, 'user', '先看这个文件'],
+    [2, 'assistant', '我去读'],
+    [5, 'user', '继续'],
+    [6, 'assistant', '好'],
+  ];
+  const refId = 'ref://session-abc/read_files/r1';
+  const tools = [
+    { type: 'tool/call', seq: 3, data: { calls: [{ callId: 'c1', name: 'read_files' }] } },
+    {
+      type: 'tool/result',
+      seq: 4,
+      data: {
+        message: {
+          source: { callId: 'c1' },
+          content: [{
+            type: 'text',
+            text: `[Stored reference: refId=${refId}; producerTool=read_files; totalItems=5; totalBytes=9000; referenceRoot=C:/x; Page with ops_result]`,
+          }],
+        },
+      },
+    },
+  ];
+  const events = new Map();
+  for (const [seq, role, text] of entries) events.set(seq, { seq, role, text });
+  for (const tool of tools) events.set(tool.seq, tool);
+  const session = {
+    id: 'sid-tool-ref',
+    surface: { nodes: [0, 1, 2, 3, 4, 5, 6] },
+    eventAt: (seq) => events.get(seq),
+    deriveEventMessage: (event) =>
+      event && (event.role === 'user' || event.role === 'assistant')
+        ? { role: event.role, content: [{ type: 'text', text: event.text }] }
+        : undefined,
+    append: () => ({ seq: 999 }),
+  };
+  const db = openStore(':memory:');
+  try {
+    const plan = planShadowV2(session, db, { now: 1 });
+    assert.ok(plan, 'full 模式应产出替换计划');
+    assert.ok(plan.text.includes(refId), `refId 应原样保留：${plan.text}`);
+    assert.ok(plan.text.includes('ops_result'), '应提示用 ops_result 取回');
+  } finally {
     db.close();
   }
 });

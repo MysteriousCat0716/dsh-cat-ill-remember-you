@@ -14,7 +14,7 @@
 import { anchorsOf, entitiesOf } from './extract.js';
 import { INJECT_RE } from './ingest.js';
 import { sidOf } from './sid.js';
-import { spillPathOf } from './originals.js';
+import { refPointerOf, spillPathOf } from './originals.js';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -210,9 +210,24 @@ function condense(entry) {
   return condenseBody(entry.text, CONDENSE_TOOL);
 }
 
+const TOOL_DIGEST_CHARS = 80;
+const TOOL_NOTE_MAX = 4;
+
+/** 工具结果压成一行：引用指针原样留（那是取回凭据），普通正文取开头。 */
+function toolDigest(text) {
+  const ref = refPointerOf(text);
+  if (ref) return ref.refId;
+  const flat = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (!flat) return '';
+  return flat.length > TOOL_DIGEST_CHARS ? `${flat.slice(0, TOOL_DIGEST_CHARS)}…` : flat;
+}
+
 /**
  * 区间里的工具结果：替换文本只写对话，但工具原文被压掉后模型就完全不知道
- * 这段发生过什么。这里给一行索引——带上 seq，宿主侧还能按 seq 取回原文。
+ * 这段发生过什么。这里给每条一条摘要 + 取回凭据：
+ *   - 普通结果：正文开头（小结果本来就看得完）；
+ *   - 大结果：refId（ops_result 能解引用）或 spill 路径（read 能读）。
+ * 只列前 4 条，其余报数量，避免工具轮把替换块撑爆。
  */
 function toolNote(session, seqs) {
   const list = Array.isArray(seqs) ? seqs : [];
@@ -231,18 +246,28 @@ function toolNote(session, seqs) {
       const text = (Array.isArray(message?.content) ? message.content : [])
         .map((block) => (typeof block?.text === 'string' ? block.text : ''))
         .join('\n');
-      results.push({ seq, name: names.get(String(callId)) ?? '', spill: spillPathOf(text) });
+      results.push({
+        seq,
+        name: names.get(String(callId)) ?? '',
+        digest: toolDigest(text),
+        spill: spillPathOf(text),
+      });
     }
   }
   if (results.length === 0) return '';
-  const head = results.slice(0, 4).map((item) => `${item.name || '工具'}@${item.seq}`).join('、');
-  const more = results.length > 4 ? ` 等 ${results.length} 个` : '';
-  // spill 目录比 seq 稳定：seq 重启后指过去是空的，磁盘上的文件还在。
+  const shown = results.slice(0, TOOL_NOTE_MAX);
+  const lines = shown.map((item) => {
+    const name = item.name || '工具';
+    return item.digest ? `- ${name}@${item.seq}「${item.digest}」` : `- ${name}@${item.seq}`;
+  });
+  if (results.length > TOOL_NOTE_MAX) lines.push(`- …等 ${results.length - TOOL_NOTE_MAX} 个`);
+  // 取回方式按结果类型给：ref 用 ops_result，spill 用 read，小结果已在摘要里。
   const dirs = [...new Set(results.map((item) => (item.spill ? path.dirname(item.spill) : '')).filter(Boolean))];
-  const where = dirs.length === 0
-    ? '；原文按 seq 取回'
-    : `；全文在 ${dirs[0]}${dirs.length > 1 ? ` 等 ${dirs.length} 个目录` : ''}`;
-  return `［工具结果 ${results.length} 个：${head}${more}${where}］`;
+  const where = [];
+  if (dirs.length > 0) where.push(`全文在 ${dirs[0]}${dirs.length > 1 ? ` 等 ${dirs.length} 个目录` : ''}`);
+  if (shown.some((item) => item.digest.startsWith('ref://'))) where.push('引用指针可用 ops_result 按 refId 打开');
+  if (where.length === 0) where.push('小结果已摘录，原文在会话日志里');
+  return `［工具结果 ${results.length} 个：\n${lines.join('\n')}\n${where.join('；')}］`;
 }
 
 /** surface 上 seq 落在区间内的节点（含工具节点）。 */
