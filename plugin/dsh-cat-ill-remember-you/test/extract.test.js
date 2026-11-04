@@ -10,6 +10,7 @@ import {
   candidateOf,
   refine,
   pendingReforge,
+  retentionOf,
 } from '../lib/extract.js';
 
 function turn(over = {}) {
@@ -380,4 +381,10 @@ test('candidateOf: 转发只留指针，不把别人的论证当成我们的结�
   assert.equal(c.subject, 'user');
   assert.match(c.summary, /^他转来一段话/);
   assert.match(c.summary, /copilot回复了/);
+});
+
+test('emotion 不比事实沉得快：retention 走 auto', () => {
+  assert.equal(retentionOf('emotion'), 'auto');
+  assert.equal(retentionOf('preference'), 'permanent');
+  assert.equal(retentionOf('fact'), 'auto');
 });

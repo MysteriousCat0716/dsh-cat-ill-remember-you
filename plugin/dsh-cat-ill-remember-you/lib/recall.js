@@ -349,6 +349,9 @@ function scoreOf(item, query, db) {
   if (item.retention === 'permanent') score += 2;
   // 提取强度：越常被真的用出来的记忆，越容易被再取回。
   score += usedBoost(db, item.id);
+  // 情绪加一点权重：人记住一件事，常常先记住当时的感受，
+  // 隔很久还能想起「那天你很难过」，而不是那天的技术细节。
+  if (item.kind === 'emotion') score += 0.5;
   return score;
 }
 

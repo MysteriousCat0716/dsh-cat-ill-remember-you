@@ -253,7 +253,9 @@ function referenceDigest(userText) {
 /** 保留期：preference 是 persona 常驻内容，emotion 是短时效，其余走默认遗忘曲线。 */
 export function retentionOf(kind) {
   if (kind === 'preference') return 'permanent';
-  if (kind === 'emotion') return 'ephemeral';
+  // 情绪不该比事实沉得快：难受的时刻是人记得最久的那些。
+  // 早先给 emotion 设成 ephemeral（7 天就沉），等于把「那天你很难过」当成一条状态日志。
+  if (kind === 'emotion') return 'auto';
   return 'auto';
 }
 
