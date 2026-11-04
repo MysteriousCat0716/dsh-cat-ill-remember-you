@@ -129,12 +129,14 @@ export function messageText(message) {
  * 模型可见消息序列（seq 递增）。跳过 seq 0 的 system head。
  * @returns {{seq:number, role:string, message:unknown, text:string}[]}
  */
-export function surfaceMessages(session) {
+export function surfaceMessages(session, maxSeq = Infinity) {
   const nodes = session?.surface?.nodes;
   if (!Array.isArray(nodes)) return [];
   const out = [];
   for (const seq of nodes) {
     if (seq === 0) continue;
+    // nodes 按 seq 递增；预览「上一轮开始时」的状态时，后面这几轮要当作还没发生。
+    if (seq > maxSeq) break;
     const event = typeof session.eventAt === 'function' ? session.eventAt(seq) : undefined;
     if (!event) continue;
     const message =
@@ -580,6 +582,8 @@ export function planShadowV2(
     roll = process.env.DSH_MEMORY_CORE_ROLL !== '0',
     // append 模式用：只算出「如果替换会怎样」，不记账、不写 surface。
     dryRun = false,
+    // 「整轮上下文」预览用它把时间倒回上一轮：只算 seq <= maxSeq 的部分。
+    maxSeq = Infinity,
   } = {},
 ) {
   const sid = sidOf(session);
@@ -609,7 +613,7 @@ export function planShadowV2(
       log(`full degraded: rows=${fullRows} > ${FULL_MAX_ROWS} sid=${sid}`);
     }
   }
-  const entries = surfaceMessages(session);
+  const entries = surfaceMessages(session, maxSeq);
   let replaced;
   let kept;
   let rangeStart = null;
@@ -633,7 +637,8 @@ export function planShadowV2(
     // 它后面再插一块，块数随轮数线性涨，窗口永远不收窄。
     // 节点 0 是 system prompt：宿主只允许 system/message 恰好覆写它，
     // 区间从节点 1 起算，不能把它包进来。
-    const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes.slice(1) : [];
+    const allNodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes.slice(1) : [];
+    const nodes = maxSeq === Infinity ? allNodes : allNodes.filter((seq) => seq <= maxSeq);
     const cutIndex = nodes.findIndex((seq) => keepSeqs.has(seq));
     if (cutIndex <= 0) {
       if (dryRun) log(`preview: full cutIndex=${cutIndex} nodes=${nodes.length} keep=${keepSeqs.size} entries=${entries.length}`);
@@ -652,7 +657,7 @@ export function planShadowV2(
     const originalRows = db
       .prepare("SELECT seq, role, text FROM turns WHERE sid = ? AND origin = 'chat' ORDER BY seq")
       .all(sid);
-    const originals = originalRows.filter((row) => !keepSeqs.has(row.seq));
+    const originals = originalRows.filter((row) => !keepSeqs.has(row.seq) && row.seq <= maxSeq);
     replaced = originals.length > 0 ? originals : entries.slice(0, keepFrom);
     kept = entries.slice(keepFrom);
   } else if (roll) {

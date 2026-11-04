@@ -536,6 +536,26 @@ test('planShadowV2: 会话不在白名单时什么都不做', async () => {
   }
 });
 
+test('planShadowV2: maxSeq 把后面的轮次当作还没发生', async () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 20), 'sid-cut');
+  const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  const list = tempSessionList(['sid-cut']);
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  try {
+    const full = planShadowV2(session, db, { keep: 10, now: 1, dryRun: true });
+    const cut = planShadowV2(session, db, { keep: 10, now: 1, dryRun: true, maxSeq: 12 });
+    assert.ok(full, '不截断时应有推演');
+    assert.ok(cut, '截到 12 也应能推演出更小的一份');
+    assert.ok(cut.rangeEnd <= 12, `区间终点不该越过截断点，实际 ${cut.rangeEnd}`);
+  } finally {
+    if (previousList === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
+    list.cleanup();
+    db.close();
+  }
+});
+
 test('planShadowV2: dryRun 在白名单外也出推演（预览不该被开关挡住）', async () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 14), 'sid-other');

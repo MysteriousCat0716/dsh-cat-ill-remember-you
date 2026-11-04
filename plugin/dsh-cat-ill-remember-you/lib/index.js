@@ -88,6 +88,10 @@ export function apply(ctx) {
   let store;
   // pre-step 算出的记忆块文本，按会话存；provider 在 assemble/refreshContext 时取。
   const hintBySid = new Map();
+  // 每轮 pre-step 的 hint 连同「当时 surface 到哪」留最近三条。
+  // 「整轮上下文」预览要倒回上一轮：那份 hint 是按他上一句话真检索出来的，
+  // 比拿最后一句估准；maxSeq 则把这一轮的节点当作还没发生。
+  const hintHistory = new Map();
   // 新会话第一轮：宿主 assemble 早于 pre-step，provider 这时还拿不到该 sid 的 hint。
   // 只兜底跨会话相同的部分（全局栈 + 常驻层）：检索结果是按别的会话 query 算的，
   // 拿它当本会话的记忆就是污染。
@@ -240,7 +244,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.23',
+    version: '0.8.24',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -339,15 +343,20 @@ export function apply(ctx) {
           if (!session) session = ctx.sessions.list().at(-1) ?? null;
           if (!session) throw new Error('还没有会话记录，先发一句话');
           const sid = sidOf(session);
-          const hint = hintBySid.get(sid) ?? lastBaseHint ?? '';
-          const row = planShadowV2(session, db, { dryRun: true });
+          const history = hintHistory.get(sid) ?? [];
+          // 最后一条是本轮；倒数第二条才是「上一轮开始时」的状态。
+          // 面板问的是「假设现在是上一轮，我会看到什么」，所以用它。
+          const prev = history.length >= 2 ? history[history.length - 2] : history[history.length - 1];
+          const hint = prev?.hint ?? hintBySid.get(sid) ?? lastBaseHint ?? '';
+          const maxSeq = prev ? prev.seq : Number.MAX_SAFE_INTEGER;
+          const row = planShadowV2(session, db, { dryRun: true, maxSeq });
           const tail = db
-            .prepare('SELECT seq, role, text FROM turns WHERE sid = ? ORDER BY seq DESC LIMIT 6')
-            .all(sid)
+            .prepare('SELECT seq, role, text FROM turns WHERE sid = ? AND seq <= ? ORDER BY seq DESC LIMIT 6')
+            .all(sid, maxSeq)
             .reverse();
           const lines = [
-            `[${new Date().toISOString()}] sid=${sid.slice(-6)} 整轮上下文预览`,
-            '下面从上到下就是模型会看到的东西。只有「记忆检索」那一块是按最后一句估的，其余都是现算。',
+            `[${new Date().toISOString()}] sid=${sid.slice(-6)} 整轮上下文预览（回到上一轮的状态）`,
+            '倒回到上一轮开始时：记忆块是那一轮真算的，替换块和保留区也按那时候的历史推。这一轮的输入当作还没发生。',
             '',
             '=== 一 · 全局栈 + 记忆块（上一轮 pre-step 实际注入）===',
             hint || '（这一轮还没有 pre-step 记录）',
@@ -621,6 +630,16 @@ export function apply(ctx) {
       // 只存文本，不改 decision：provider 会在本步 refreshContext 时取走。
       hintBySid.set(sid, hintParts.join('\n\n'));
       if (baseHint) lastBaseHint = baseHint;
+      {
+        // 记下这一轮算 hint 时 surface 到哪了。面板倒回上一轮就靠它：
+        // 上一轮那条的 seq 正好是「本轮开始前」的边界。
+        let maxNode = 0;
+        for (const node of session?.surface?.nodes ?? []) if (node > maxNode) maxNode = node;
+        const list = hintHistory.get(sid) ?? [];
+        list.push({ hint: hintBySid.get(sid), seq: maxNode, at: Date.now() });
+        while (list.length > 3) list.shift();
+        hintHistory.set(sid, list);
+      }
       log(`hint queued sid=${sid} chars=${hintBySid.get(sid).length}`);
       return decision;
     } catch (error) {
