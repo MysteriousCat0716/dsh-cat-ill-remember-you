@@ -239,7 +239,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.21',
+    version: '0.8.22',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -309,7 +309,8 @@ export function apply(ctx) {
             `chars=${row.charsBefore}->${row.charsAfter} kept=${row.kept} ` +
             `lost=${Number(row.lostRatio ?? 0).toFixed(3)} dangling=${row.dangling}`;
           fs.mkdirSync(path.dirname(PREVIEW_LOG), { recursive: true });
-          fs.appendFileSync(PREVIEW_LOG, `${header}\n${row.text}\n${'-'.repeat(70)}\n`, 'utf8');
+          // 覆盖写：预览只保留最近一次，文件不会越点越长。
+          fs.writeFileSync(PREVIEW_LOG, `${header}\n${row.text}\n${'-'.repeat(70)}\n`, 'utf8');
           log(`panel: preview sid=${sid} chars=${row.charsAfter}`);
           // 写完就用记事本打开，省掉「去文件夹里找」那一步。
           // 打不开不影响写入结果，只在日志里记一笔。

@@ -34,7 +34,8 @@ export const KEEP_RATIO = 0.4;
 // 少于这个条数不跑：没有可换的内容。
 export const MIN_ENTRIES = 4;
 // 替换文本是缓存不是压缩：600 字上限放开到 1500，变大可以理解。
-export const MAX_REPLACE_CHARS = 1500;
+// 可用 DSH_MEMORY_CORE_REPLACE_CHARS 调大——大会更完整，也更容易让前缀命中失败。
+export const MAX_REPLACE_CHARS = envInt('DSH_MEMORY_CORE_REPLACE_CHARS', 1500);
 // 同一会话两次真替换之间的冷却。每轮都改前缀会让缓存每轮失效。
 export const REPLACE_COOLDOWN_MS = 3 * 60 * 1000;
 
@@ -270,14 +271,19 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note
   const limit = Math.max(80, maxChars - header.length - 10);
   const picked = [];
   let size = 0;
+  let skipped = 0;
   // 从最近的老消息往回填：贴着保留区的细节更可能被下一轮接着用。
   for (let index = list.length - 1; index >= 0; index -= 1) {
     const entry = list[index];
     const text = condense(entry);
     if (!text) continue;
     const prefix = entry.role === 'user' ? '用户' : '助手';
-    const line = `- ${prefix}: ${text}`;
-    if (size + line.length + 1 > limit) continue;
+    // 行首带 seq：既能看出谁先说谁后说，也能按号回查原文。
+    const line = `- [${entry.seq}] ${prefix}: ${text}`;
+    if (size + line.length + 1 > limit) {
+      skipped += 1;
+      continue;
+    }
     picked.push(line);
     size += line.length + 1;
   }
@@ -285,11 +291,15 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note
     const entry = [...list].reverse().find((item) => condense(item));
     if (!entry) return header;
     const prefix = entry.role === 'user' ? '用户' : '助手';
-    picked.push(`- ${prefix}: ${condense(entry).slice(0, Math.max(20, limit - 10))}`);
+    picked.push(`- [${entry.seq}] ${prefix}: ${condense(entry).slice(0, Math.max(20, limit - 10))}`);
   }
   picked.reverse();
-  const out = header + picked.join('\n');
-  return out.length <= maxChars ? out : `${out.slice(0, maxChars - 1)}…`;
+  const tail =
+    skipped > 0
+      ? `\n（预算 ${maxChars} 字，更早的 ${skipped} 条没展开；它们只在关键词里，原文按 seq 回查。）`
+      : '';
+  const out = header + picked.join('\n') + tail;
+  return out.length <= maxChars + 120 ? out : `${out.slice(0, maxChars + 119)}…`;
 }
 
 /** 被换窗口里的锚点/实体，去重。实体在前：回放显示 entities key 的断链率是 anchors 的十分之一。 */
