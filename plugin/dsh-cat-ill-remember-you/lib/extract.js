@@ -97,8 +97,10 @@ export function classify(userText, allText) {
   if (String(userText ?? '').length >= 120 && TRANSFER.test(String(userText ?? ''))) {
     return 'reference';
   }
-  // 偏好判据只认用户自己说的：助手附和一句「我也喜欢」不是他的偏好。
-  if (PREFERENCE.test(String(userText ?? ''))) return 'preference';
+  // 偏好判据只认他自己下的判断：助手附和一句「我也喜欢」不是他的偏好；
+  // 「算不算我喜欢这样」是他在担心，也不是偏好。
+  const asking = /[？?]|算不算|是不是|会不会|要不要/.test(String(userText ?? ''));
+  if (PREFERENCE.test(String(userText ?? '')) && !asking) return 'preference';
   // 决定类强词其次：「以后……不要只靠分片」是决定，不是偏好
   if (
     /决定|定了|就这样|采用|选用|还是用|以后|下次|记住|不再|改成|必须|规则|约定/.test(sample) ||

@@ -335,9 +335,18 @@ test('pendingReforge: 只返回 rule_ver 比当前旧的行', () => {
   db.close();
 });
 
+test('classify: 带偏好词的自问不算偏好', () => {
+  assert.equal(
+    classify('这算不算我在引导你长成什么样 那就很坏了 你不喜欢这样', '这算不算我在引导你长成什么样'),
+    'fact',
+  );
+});
+
 test('classify: 转发别人的话单独一类，不冒充决定', () => {
   const copilot = `copilot回复了\n${'我接受你的修正，并按当前代码状态重新审查了一轮。'.repeat(8)}`;
   assert.equal(classify(copilot, copilot), 'reference');
+  const bili = `我在B站看到别人对ai记忆的研究\n${'我做了大概有三年左右了 记忆系统我大概做了也有一年了'.repeat(4)}`;
+  assert.equal(classify(bili, bili), 'reference');
 
   const friend = `朋友说 对于相关性 可以增加时间因子 用时间相关性和事实相关性共同判断相关性\n${'还有 朋友说 记忆久了 会出现两段记忆记录一样的提示词 这个我没听懂'.repeat(3)}`;
   assert.equal(classify(friend, friend), 'reference');
