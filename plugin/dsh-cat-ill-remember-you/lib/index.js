@@ -91,6 +91,10 @@ export function apply(ctx) {
   // 只兜底跨会话相同的部分（全局栈 + 常驻层）：检索结果是按别的会话 query 算的，
   // 拿它当本会话的记忆就是污染。
   let lastBaseHint = '';
+  // 面板的「开关替换」「输出预览」没有会话上下文；记下最近动过的会话当当前会话。
+  // 多窗口同时说话时跟最后那个，面板上显示它的后 6 位，不假装是精确的。
+  let lastSid = '';
+  let lastSession = null;
   // Set by the effect cleanup. An in-flight pre-step may still be awaiting
   // next() when the host disposes this scope; without this flag currentStore()
   // would happily reopen the db and write after unload.
@@ -214,8 +218,27 @@ export function apply(ctx) {
   // 与 mnemon 的 host 侧同一个机制：connection.rpc.handle(channel, handler)，
   // handler 返回 { ok, value } 或 { ok: false, error }。没有 connection 的环境
   // （CLI / 无 webServer 的 profile）直接跳过，插件照常加载。
+  // 替换白名单与预览日志都是磁盘文件：面板只做读写，不另存一份状态。
+  const REPLACE_FILE = path.join(os.homedir(), '.dsh', 'cache', 'replace-sessions.txt');
+  const PREVIEW_LOG = path.join(os.homedir(), '.dsh', 'cache', 'replace-preview.log');
+  const readWhitelist = () => {
+    try {
+      return fs
+        .readFileSync(REPLACE_FILE, 'utf8')
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+  const writeWhitelist = (lines) => {
+    fs.mkdirSync(path.dirname(REPLACE_FILE), { recursive: true });
+    fs.writeFileSync(REPLACE_FILE, lines.length ? `${lines.join('\n')}\n` : '', 'utf8');
+  };
+
   const panelState = () => ({
-    version: '0.8.15',
+    version: '0.8.16',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -224,6 +247,10 @@ export function apply(ctx) {
       enrich: envOn('DSH_MEMORY_CORE_ENRICH', true),
     },
     replace: process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS ? 'env' : 'file',
+    // 「替换开关」跟着最后说话的那个会话走。
+    replaceOn: lastSid ? replaceMode(lastSid) !== 'off' : false,
+    replaceSid: lastSid ? lastSid.slice(-6) : '',
+    previewLog: PREVIEW_LOG,
   });
   const LAYER_KEYS = ['STACK', 'PERSONA', 'PEOPLE', 'RECALL', 'ENRICH'];
   ctx.inject(['connection'], (webContext) => {
@@ -235,11 +262,42 @@ export function apply(ctx) {
         if (endpoint === 'set') {
           const key = String(input?.key ?? '');
           const value = input?.value;
-          if (!LAYER_KEYS.includes(key)) throw new Error(`未知的层：${key}`);
           if (value !== 'on' && value !== 'off') throw new Error('value 只接受 on / off');
+          if (key === 'REPLACE') {
+            if (process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS) {
+              throw new Error('替换白名单由 DSH_MEMORY_CORE_REPLACE_SESSIONS 指定，面板改不了');
+            }
+            if (!lastSid) throw new Error('还没有会话记录，先发一句话再开');
+            // 只动本会话那一行；手写的 * 和别的会话一律保留。
+            const rest = readWhitelist().filter((line) => line.split(':')[0] !== lastSid);
+            if (value === 'on') rest.push(`${lastSid}:full`);
+            writeWhitelist(rest);
+            log(`panel: replace ${value} sid=${lastSid}`);
+            return { ok: true, value: panelState() };
+          }
+          if (!LAYER_KEYS.includes(key)) throw new Error(`未知的开关：${key}`);
           process.env[`DSH_MEMORY_CORE_${key}`] = value;
           log(`panel: ${key}=${value}`);
           return { ok: true, value: panelState() };
+        }
+        if (endpoint === 'preview') {
+          if (!lastSession) throw new Error('还没有会话记录，先发一句话');
+          const db = currentStore();
+          if (!db) throw new Error('记忆库没打开');
+          // 只推演：不写 surface、不记账、不看冷却，随时可以点。
+          const row = planShadowV2(lastSession, db, true);
+          if (!row) throw new Error('这一轮没有可替换的历史（消息太少，或还没到可换的区间）');
+          const header =
+            `[${new Date().toISOString()}] sid=${lastSid.slice(-6)} range=${row.rangeStart}-${row.rangeEnd} ` +
+            `chars=${row.charsBefore}->${row.charsAfter} kept=${row.kept} ` +
+            `lost=${Number(row.lostRatio ?? 0).toFixed(3)} dangling=${row.dangling}`;
+          fs.mkdirSync(path.dirname(PREVIEW_LOG), { recursive: true });
+          fs.appendFileSync(PREVIEW_LOG, `${header}\n${row.text}\n${'-'.repeat(70)}\n`, 'utf8');
+          log(`panel: preview sid=${lastSid} chars=${row.charsAfter}`);
+          return {
+            ok: true,
+            value: { path: PREVIEW_LOG, before: row.charsBefore, after: row.charsAfter, text: row.text },
+          };
         }
         throw new Error(`未知的 endpoint：${endpoint}`);
       } catch (error) {
@@ -254,6 +312,8 @@ export function apply(ctx) {
 
   ctx.on('session/event', (session, event) => {
     lastActivity = Date.now();
+    lastSid = sidOf(session);
+    lastSession = session;
     try {
       const db = currentStore();
       if (!db) return;
@@ -313,6 +373,11 @@ export function apply(ctx) {
       // 取会话和 cwd：retrieve 的 L3 要用它，放在内层 try 外面，
       // 藏进 try 里会变成 ReferenceError 再被外层 catch 吞掉。
       const session = typeof ctx.sessions?.get === 'function' ? ctx.sessions.get(sid) : undefined;
+      // 面板的替换开关与预览都以「最后说话的这个会话」为准。
+      if (session) {
+        lastSid = sid;
+        lastSession = session;
+      }
       const cwd = session?.header?.cwd;
 
       // 全局栈：跨会话按时间取最近几条，作为接续上下文（指针在栈里，正文现查）。

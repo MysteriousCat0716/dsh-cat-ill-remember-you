@@ -442,10 +442,11 @@ export function replaceEnabled(sid) {
 }
 
 /**
- * 白名单里每行可以是 `sid`（滚动小步）或 `sid:full`（一次换掉全部旧历史）；
- * `*`/`*:full` 对所有会话生效。返回 'off' | 'roll' | 'full'。
+ * 白名单里每行可以是 `sid`（滚动小步）、`sid:full`（一次换掉全部旧历史）
+ * 或 `sid:append`（不动历史，只在上下文末尾追加一块「如果替换会变成什么样」）；
+ * `*`/`*:full`/`*:append` 对所有会话生效。返回 'off' | 'roll' | 'full' | 'append'。
  * @param {string|null|undefined} sid
- * @returns {'off'|'roll'|'full'}
+ * @returns {'off'|'roll'|'full'|'append'}
  */
 export function replaceMode(sid) {
   const text = sessionsText();
@@ -454,6 +455,7 @@ export function replaceMode(sid) {
   if (allowed.length === 0) return 'off';
   const id = sid == null ? '' : String(sid);
   if (allowed.includes('*:full') || allowed.includes(`${id}:full`)) return 'full';
+  if (allowed.includes('*:append') || allowed.includes(`${id}:append`)) return 'append';
   if (allowed.includes('*') || allowed.includes(id)) return 'roll';
   return 'off';
 }
@@ -564,6 +566,8 @@ export function planShadowV2(
     window = envInt('DSH_MEMORY_CORE_SHADOW_WINDOW', DEFAULT_WINDOW),
     now = Date.now(),
     roll = process.env.DSH_MEMORY_CORE_ROLL !== '0',
+    // append 模式用：只算出「如果替换会怎样」，不记账、不写 surface。
+    dryRun = false,
   } = {},
 ) {
   const sid = sidOf(session);
@@ -573,10 +577,13 @@ export function planShadowV2(
   // surface 走一遍才发现不记账。
   const mode = replaceMode(sid);
   if (mode === 'off') return null;
+  // append 只推演：选区按 full 算（要测的就是「全换之后够不够」），
+  // 记账与 apply 全部跳过——pre-step 只拿 text 拼到上下文末尾。
+  const selectMode = mode === 'append' ? 'full' : mode;
   // full 每轮全量 SELECT 该 sid 的 turns（shadow-v2.js 里最贵的一次查询），
   // 行数越多越慢。超过 FULL_MAX_ROWS 就降级到 roll：成本从 O(n) 回到 O(1)。
   let fullRows = 0;
-  if (mode === 'full') {
+  if (selectMode === 'full') {
     const count = db
       .prepare("SELECT COUNT(*) AS n FROM turns WHERE sid = ? AND origin = 'chat'")
       .get(sid);
@@ -592,7 +599,7 @@ export function planShadowV2(
   let rangeStart = null;
   let rangeEnd = null;
   let covered = null;
-  if (mode === 'full' && fullRows <= FULL_MAX_ROWS) {
+  if (selectMode === 'full' && fullRows <= FULL_MAX_ROWS) {
     // 完全替换：不等条数/字数门槛，当前轮之外全换。
     // 保留区按「轮」算，不按条数：从最后一条 user 起，到末尾全部留原文。
     // 旧的 FULL_KEEP_TAIL=2 在多步回复里会把当前 user 换进区间——最后两条
@@ -615,7 +622,7 @@ export function planShadowV2(
     rangeEnd = covered.at(-1);
     // 热路径：每个 assistant 事件都会重新算计划，但窗口多半没动。区间没变
     // 就直接返回，不查 turns 全表（full 分支最贵的一次查询）。
-    if (sameRangeApplied(db, sid, rangeStart, rangeEnd)) return null;
+    if (!dryRun && sameRangeApplied(db, sid, rangeStart, rangeEnd)) return null;
     // 替换块盖住的原文已经离开 surface，只有 turns 还留着。区间覆盖的是
     // surface 上除保留区外的全部节点，所以原文 = turns 里除保留区 seq 外的
     // 全部 chat 行——不能按 seq < rangeEnd 取：surface 节点顺序和 seq 并不
@@ -654,7 +661,7 @@ export function planShadowV2(
   // 同一区间不重复记账：每轮都会重算，但被换的窗口没动就没新信息。
   // 上一次 apply 失败（applied=0）时允许重试，否则一次微任务失败会让
   // 这段永远停在原文。full 分支在上面已经判过，这里主要挡 roll/兜底。
-  if (sameRangeApplied(db, sid, rangeStart, rangeEnd)) return null;
+  if (!dryRun && sameRangeApplied(db, sid, rangeStart, rangeEnd)) return null;
   const text = renderReplacement(replaced, {
     note: toolNote(session, covered ?? nodesBetween(session, rangeStart, rangeEnd)),
   });
@@ -666,8 +673,8 @@ export function planShadowV2(
     .prepare('SELECT t FROM shadow_v2 WHERE sid = ? AND applied = 1 ORDER BY id DESC LIMIT 1')
     .get(sid);
   // full 模式不设冷却：要的就是每轮都把可换的旧历史换掉。
-  const cooldown = mode === 'full' ? 0 : roll ? ROLL_COOLDOWN_MS : REPLACE_COOLDOWN_MS;
-  if (recent && cooldown > 0 && now - recent.t < cooldown) return null;
+  const cooldown = selectMode === 'full' ? 0 : roll ? ROLL_COOLDOWN_MS : REPLACE_COOLDOWN_MS;
+  if (!dryRun && recent && cooldown > 0 && now - recent.t < cooldown) return null;
   const row = {
     sid,
     turn: 0,
@@ -685,6 +692,8 @@ export function planShadowV2(
     applied: false,
     cwd,
   };
+  // 推演不记账、不写 surface：pre-step 只拿 text 拼到上下文末尾。
+  if (dryRun) return { ...row, missing: assessment.missing, danglingList: assessment.dangling };
   const pendingKey = `${sid}:${rangeStart}:${rangeEnd}`;
   if (pending.has(pendingKey)) return null;
   pending.add(pendingKey);

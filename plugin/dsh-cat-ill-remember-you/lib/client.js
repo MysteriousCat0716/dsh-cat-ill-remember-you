@@ -98,6 +98,7 @@ window.__ModuleLoader__.load({
       const [state, setState] = React.useState(null);
       const [error, setError] = React.useState('');
       const [busy, setBusy] = React.useState('');
+      const [previewInfo, setPreviewInfo] = React.useState('');
 
       const load = React.useCallback(() => {
         call('state')
@@ -115,14 +116,27 @@ window.__ModuleLoader__.load({
       const toggle = async (key) => {
         if (!state || busy) return;
         const lower = key.toLowerCase();
+        // REPLACE 不是 layers 里的一层：它对应白名单文件里本会话那一行。
+        const current = key === 'REPLACE' ? state.replaceOn === true : state.layers[lower] === true;
         setBusy(key);
         setError('');
         try {
-          const next = await call('set', {
-            key,
-            value: state.layers[lower] ? 'off' : 'on',
-          });
+          const next = await call('set', { key, value: current ? 'off' : 'on' });
           setState(next);
+        } catch (e) {
+          setError(String(e && e.message ? e.message : e));
+        } finally {
+          setBusy('');
+        }
+      };
+
+      const preview = async () => {
+        if (busy) return;
+        setBusy('PREVIEW');
+        setError('');
+        try {
+          const res = await call('preview');
+          setPreviewInfo(`已写入 ${res.path}（${res.before} → ${res.after} 字）`);
         } catch (e) {
           setError(String(e && e.message ? e.message : e));
         } finally {
@@ -213,20 +227,86 @@ window.__ModuleLoader__.load({
           h('div', { key: 'rows' }, rows),
           h(
             'div',
-            { key: 'replace', style: { marginTop: 18 } },
+            {
+              key: 'replace',
+              style: { marginTop: 18, paddingTop: 14, borderTop: `1px solid ${line}` },
+            },
             [
-              h('div', { key: 't', style: { fontWeight: 600, marginBottom: 4 } }, '上下文替换'),
               h(
                 'div',
-                { key: 'd', style: { color: text2, fontSize: 12 } },
-                state && state.replace === 'env'
-                  ? '当前由环境变量 DSH_MEMORY_CORE_REPLACE_SESSIONS 决定白名单。'
-                  : '白名单文件：~/.dsh/cache/replace-sessions.txt（未在名单里的会话只预览，不改历史）。',
+                { key: 'head', style: { display: 'flex', alignItems: 'center', gap: 14 } },
+                [
+                  h(
+                    'div',
+                    { key: 'text', style: { flex: '1 1 auto', minWidth: 0 } },
+                    [
+                      h(
+                        'div',
+                        { key: 't', style: { fontSize: 13 } },
+                        state && state.replaceSid
+                          ? `上下文替换（本会话 ${state.replaceSid}）`
+                          : '上下文替换',
+                      ),
+                      h(
+                        'div',
+                        { key: 'd', style: { fontSize: 12, color: text2, marginTop: 2 } },
+                        state && state.replace === 'env'
+                          ? '白名单由环境变量 DSH_MEMORY_CORE_REPLACE_SESSIONS 指定，面板改不了。'
+                          : state && state.replaceOn
+                            ? '开着：这一轮之后，旧历史会被替换成压缩块。'
+                            : '关着：历史原样保留，只注入记忆块。',
+                      ),
+                    ],
+                  ),
+                  h(Switch, {
+                    key: 'switch',
+                    on: state ? state.replaceOn === true : false,
+                    disabled:
+                      state === null ||
+                      busy === 'REPLACE' ||
+                      (state !== null && state.replace === 'env'),
+                    onClick: () => toggle('REPLACE'),
+                  }),
+                ],
               ),
               h(
                 'div',
-                { key: 'next', style: { color: text2, fontSize: 12, marginTop: 6 } },
-                '三选一（不改 / 尾部测试 / 正式替换）还没接：要先把「尾部测试」那半条路做出来。',
+                {
+                  key: 'preview',
+                  style: { marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
+                },
+                [
+                  h(
+                    'button',
+                    {
+                      key: 'btn',
+                      type: 'button',
+                      disabled: state === null || busy === 'PREVIEW',
+                      onClick: preview,
+                      style: {
+                        padding: '5px 12px',
+                        borderRadius: 6,
+                        border: `1px solid ${line}`,
+                        background: 'transparent',
+                        color: text1,
+                        fontSize: 12,
+                        cursor: state === null || busy === 'PREVIEW' ? 'default' : 'pointer',
+                        opacity: state === null || busy === 'PREVIEW' ? 0.5 : 1,
+                      },
+                    },
+                    busy === 'PREVIEW' ? '计算中…' : '输出预览',
+                  ),
+                  h(
+                    'span',
+                    { key: 'path', style: { fontSize: 11, color: text2, wordBreak: 'break-all' } },
+                    previewInfo || (state && state.previewLog ? state.previewLog : ''),
+                  ),
+                ],
+              ),
+              h(
+                'div',
+                { key: 'note', style: { fontSize: 11, color: text2, marginTop: 8 } },
+                '预览只推演：不改历史、不记账、不看冷却。文本追加写进上面这个文件，随时可以打开对照。',
               ),
             ],
           ),
