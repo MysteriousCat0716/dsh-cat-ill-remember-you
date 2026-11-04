@@ -281,8 +281,10 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note
     // 行首带 seq：既能看出谁先说谁后说，也能按号回查原文。
     const line = `- [${entry.seq}] ${prefix}: ${text}`;
     if (size + line.length + 1 > limit) {
-      skipped += 1;
-      continue;
+      // 塞不下就停，不往回跳过：跳着填会让块里只剩用户短句、助手长句全缺，
+      // 读起来是「一串用户」，时序也断了。宁可少留几条，也要留下连续的一段。
+      skipped += index + 1;
+      break;
     }
     picked.push(line);
     size += line.length + 1;
