@@ -676,7 +676,11 @@ window.__ModuleLoader__.load({
             lineHeight: 1.7,
             fontSize: 13,
             color: text1,
-            maxWidth: 760,
+            // 撑满中栏并自己滚：宿主给的是固定高度的容器，内容长了不自己出滚动条就会被裁掉。
+            height: '100%',
+            maxHeight: '100%',
+            boxSizing: 'border-box',
+            overflowY: 'auto',
           },
         },
         [
