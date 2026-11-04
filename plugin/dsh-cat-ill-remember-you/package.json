@@ -1,12 +1,13 @@
 {
   "name": "dsh-cat-ill-remember-you",
-  "version": "0.8.13",
+  "version": "0.8.14",
   "description": "Memory core: append-only dialogue turns in SQLite, distilled memories with retrieval summaries, and structural + vector recall gated by a written reason.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
     ".": "./lib/index.js",
+    "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
   "files": [
@@ -26,6 +27,16 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-locale"
+      ]
     }
   }
 }
