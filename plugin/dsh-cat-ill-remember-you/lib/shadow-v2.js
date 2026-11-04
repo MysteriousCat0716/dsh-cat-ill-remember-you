@@ -604,7 +604,7 @@ function sameRangeApplied(db, sid, rangeStart, rangeEnd) {
  */
 export function applyReplacement(session, replaced, text, sid, { startSeq = null, endSeq = null } = {}) {
   if (!replaceEnabled(sid)) {
-    log(`apply skip: 不在白名单 sid=${sid}`);
+    log(`apply skip: 不在替换范围 sid=${sid}`);
     return false;
   }
   if (!Array.isArray(replaced) || replaced.length === 0) {

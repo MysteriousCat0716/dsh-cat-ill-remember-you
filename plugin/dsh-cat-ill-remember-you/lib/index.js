@@ -531,7 +531,7 @@ export function apply(ctx) {
                 if (stacked) {
                   parts.push(
                     replaceMode(sid) === 'off'
-                      ? `${stacked}\n（本会话不在替换白名单：以上栈只用于预览，不改写本会话历史。）`
+                      ? `${stacked}\n（本会话在替换黑名单里：以上栈只用于预览，不改写本会话历史。）`
                       : stacked,
                   );
                 }
@@ -740,7 +740,7 @@ export function apply(ctx) {
           const mode = replaceMode(sid);
           const body =
             mode === 'off'
-              ? `${stacked}\n（本会话不在替换白名单：以上栈只用于预览，不改写本会话历史。）`
+              ? `${stacked}\n（本会话在替换黑名单里：以上栈只用于预览，不改写本会话历史。）`
               : stacked;
           hintParts.push(body);
           log(`stack chars=${stacked.length} mode=${mode}`);
