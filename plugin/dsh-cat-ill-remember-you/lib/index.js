@@ -85,8 +85,9 @@ export function apply(ctx) {
   // pre-step 算出的记忆块文本，按会话存；provider 在 assemble/refreshContext 时取。
   const hintBySid = new Map();
   // 新会话第一轮：宿主 assemble 早于 pre-step，provider 这时还拿不到该 sid 的 hint。
-  // 全局栈本来就跨会话相同，兜底用最近一次算出的文本，别让第一轮空着。
-  let lastHint = '';
+  // 只兜底跨会话相同的部分（全局栈 + 常驻层）：检索结果是按别的会话 query 算的，
+  // 拿它当本会话的记忆就是污染。
+  let lastBaseHint = '';
   // Set by the effect cleanup. An in-flight pre-step may still be awaiting
   // next() when the host disposes this scope; without this flag currentStore()
   // would happily reopen the db and write after unload.
@@ -172,7 +173,7 @@ export function apply(ctx) {
         const agent = context?.agent;
         if (!agent) return '';
         const sid = sidOf(agent);
-        const hint = hintBySid.get(sid) ?? lastHint;
+        const hint = hintBySid.get(sid) ?? lastBaseHint;
         // 契约只给走替换的会话：白名单外不改历史，也就不需要它。
         const contract = sid && replaceMode(sid) !== 'off' ? REPLACE_CONTRACT : '';
         return [contract, hint].filter(Boolean).join('\n\n');
@@ -284,6 +285,9 @@ export function apply(ctx) {
         }
       }
 
+      // 走到这里 hintParts 里只有跨会话相同的部分（全局栈 + 常驻层），先记下来做兜底。
+      const baseHint = hintParts.join('\n\n');
+
       // 检索的 query = 栈里最近两条 + 这一句：只说「继续」时，栈负责说清在继续什么。
       const currentText = lastUserText(messages);
       const recent = currentText
@@ -385,7 +389,7 @@ export function apply(ctx) {
       }
       // 只存文本，不改 decision：provider 会在本步 refreshContext 时取走。
       hintBySid.set(sid, hintParts.join('\n\n'));
-      lastHint = hintBySid.get(sid);
+      if (baseHint) lastBaseHint = baseHint;
       log(`hint queued sid=${sid} chars=${hintBySid.get(sid).length}`);
       return decision;
     } catch (error) {
