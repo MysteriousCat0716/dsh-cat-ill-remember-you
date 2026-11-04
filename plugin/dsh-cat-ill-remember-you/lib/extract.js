@@ -82,6 +82,10 @@ function blockText(block) {
 const DECISION_HINT =
   /我希望|我想要|我想让|先不做|暂时不|不要删|不要改|不要动|不要再|不要只|不要用|别删|别改|别动|别再|别用|别加|别把/;
 
+// 偏好是长期态度，决定是一次性的取舍。两者同句出现时（「我更喜欢 X，以后都用 X」），
+// 存下来更该是态度——决定会随项目变，态度不会。
+const PREFERENCE = /偏好|更喜欢|喜欢|讨厌|不喜欢|受不了|烦死|最爱|更愿意|更倾向/;
+
 /**
  * Rule-based classification of one block.
  * @param {string} userText
@@ -89,15 +93,15 @@ const DECISION_HINT =
  */
 export function classify(userText, allText) {
   const sample = `${userText} ${allText}`;
-  // 决定类强词优先：「以后……不要只靠分片」是决定，不是偏好
+  // 偏好判据只认用户自己说的：助手附和一句「我也喜欢」不是他的偏好。
+  if (PREFERENCE.test(String(userText ?? ''))) return 'preference';
+  // 决定类强词其次：「以后……不要只靠分片」是决定，不是偏好
   if (
     /决定|定了|就这样|采用|选用|还是用|以后|下次|记住|不再|改成|必须|规则|约定/.test(sample) ||
     DECISION_HINT.test(sample)
   ) {
     return 'decision';
   }
-  // 「别撑了」「不用算着」是安慰话，不是偏好；偏好只认明确的态度词
-  if (/偏好|更喜欢|讨厌|不喜欢|受不了|烦死|最爱/.test(sample)) return 'preference';
   // 情绪是时间强相关的：单独一类，取回只在情绪/回忆轮次触发，短半衰期
   if (/累了|难受|难过|玉玉|失眠|焦虑|撑不住|想你|低落|情绪|抑郁/.test(sample)) {
     return 'emotion';
@@ -147,7 +151,7 @@ const ATTITUDE =
 function subjectOf(userText, kind) {
   const text = String(userText ?? '');
   if (kind === 'decision' || kind === 'preference') {
-    return ATTITUDE.test(text) || DECISION_HINT.test(text) ? 'user' : 'assistant';
+    return ATTITUDE.test(text) || PREFERENCE.test(text) || DECISION_HINT.test(text) ? 'user' : 'assistant';
   }
   return text ? 'user' : 'assistant';
 }

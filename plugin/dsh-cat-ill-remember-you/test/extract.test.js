@@ -142,6 +142,16 @@ test('refine: an empty block is scanned but not consumed', () => {
   db.close();
 });
 
+test('classify: 偏好先于决定，但只认用户自己说的', () => {
+  // 同句既有偏好又有决定：「以后」不该把长期态度吞成一次性决定
+  assert.equal(classify('我更喜欢中文，以后回答都用中文。', '我更喜欢中文，以后回答都用中文。'), 'preference');
+  assert.equal(classify('我喜欢费曼那种认真，决定做一件事时不给别的留缝。', '嗯。'), 'preference');
+  // 助手附和一句「我也喜欢」不算他的偏好
+  assert.equal(classify('以后记忆都进 SQLite。', '以后记忆都进 SQLite。我也喜欢这个方向，就按这个定。'), 'decision');
+  // 纯决定不变
+  assert.equal(classify('以后都用 pnpm。', '以后都用 pnpm。'), 'decision');
+});
+
 test('candidateOf: subject follows the summary source', () => {
   const human = candidateOf({
     turns: [
