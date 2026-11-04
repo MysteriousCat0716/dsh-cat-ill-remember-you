@@ -335,6 +335,17 @@ test('pendingReforge: 只返回 rule_ver 比当前旧的行', () => {
   db.close();
 });
 
+test('classify: 带链接的「喜欢」是对内容的反应，不是长期偏好', () => {
+  assert.equal(
+    classify(
+      '【光纤背后无敌的工程-哔哩哔哩】 https://b23.tv/juuEC1g 视频来自我其中一个最喜欢的科普up主',
+      '【光纤背后无敌的工程-哔哩哔哩】 https://b23.tv/juuEC1g 视频来自我其中一个最喜欢的科普up主',
+    ),
+    'fact',
+  );
+  assert.equal(classify('我更喜欢中文', '我更喜欢中文'), 'preference');
+});
+
 test('classify: 带偏好词的自问不算偏好', () => {
   assert.equal(
     classify('这算不算我在引导你长成什么样 那就很坏了 你不喜欢这样', '这算不算我在引导你长成什么样'),

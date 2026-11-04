@@ -99,7 +99,11 @@ export function classify(userText, allText) {
   }
   // 偏好判据只认他自己下的判断：助手附和一句「我也喜欢」不是他的偏好；
   // 「算不算我喜欢这样」是他在担心，也不是偏好。
+  // 带链接的「喜欢这个视频」是对一条内容的反应，不是长期偏好。
   const asking = /[？?]|算不算|是不是|会不会|要不要/.test(String(userText ?? ''));
+  if (PREFERENCE.test(String(userText ?? '')) && /https?:\/\//.test(String(userText ?? ''))) {
+    return 'fact';
+  }
   if (PREFERENCE.test(String(userText ?? '')) && !asking) return 'preference';
   // 决定类强词其次：「以后……不要只靠分片」是决定，不是偏好
   if (
