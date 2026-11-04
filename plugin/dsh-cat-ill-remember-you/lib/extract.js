@@ -88,11 +88,10 @@ const PREFERENCE = /偏好|更喜欢|喜欢|讨厌|不喜欢|受不了|烦死|�
 
 /**
  * Rule-based classification of one block.
+ * 只看用户自己的话：助手回复里的「决定」「喜欢」不该改变这条记忆的类。
  * @param {string} userText
- * @param {string} allText
  */
-export function classify(userText, allText) {
-  const sample = `${userText} ${allText}`;
+export function classify(userText) {
   // 转发先认：别人原文里什么词都有，放后面会被「决定」「喜欢」抢走。
   if (String(userText ?? '').length >= 120 && TRANSFER.test(String(userText ?? ''))) {
     return 'reference';
@@ -149,8 +148,8 @@ export function entitiesOf(text) {
 
 /**
  * 表态词：决定/偏好这两类，只有用户自己说过才算「用户的决定」。
- * classify() 拿 user + assistant 的合并文本判类，所以一条决定常常
- * 是助手替用户总结出来的；那种条目的 subject 是 assistant，不是 user。
+ * classify() 只看他的话；但一条决定常常是助手替用户总结出来的，
+ * 那种条目 kind 仍是 decision，subject 记 assistant。
  */
 const ATTITUDE =
   /决定|定了|就这样|采用|选用|还是用|以后|下次|记住|不再|改成|必须|规则|约定|偏好|更喜欢|讨厌|不喜欢|受不了|烦死|最爱/;
@@ -277,7 +276,7 @@ export function candidateOf(block) {
   // 纯回执（「好的」「嗯」）不立记忆
   if (userText.length < 6 && botText.length < 20) return null;
 
-  const kind = classify(userText, allText);
+  const kind = classify(userText);
   const subject = subjectOf(userText, botText, kind);
   // 我的过程和计划不立记忆（设计-哪些话不建记忆 第六节）。只拦「过程句」，
   // 不拦我把他的决定总结成一句话——那种块的主语本来就该是他的嘴。
