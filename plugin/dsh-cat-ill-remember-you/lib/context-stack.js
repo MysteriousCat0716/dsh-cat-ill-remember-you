@@ -270,8 +270,11 @@ function renderRow(row, { isRaw, rawChars, oldChars, sid }) {
   // 有真摘要才叫「旧·摘要」；只是原文截断的标「节选」，不撒谎。
   const tag = isRaw ? '' : row.summary ? '（旧·摘要）' : '（节选）';
   const who = row.role === 'user' ? '用户' : '助手';
-  const mark = sid && String(row.sid) === String(sid) ? '' : ` ${String(row.sid).slice(-6)}`;
-  return `- ${clock(row.t)}${mark} ${who}${tag}：${text}`;
+  // 会话码要显眼：裸的 6 位码会被当成消息 id 或时间的一部分——2026-11-04 就把
+  // 上个会话的收尾话当成了本会话的状态。本会话写「本会话」，别的会话一律带码。
+  const code = String(row.sid ?? '').slice(-6) || '??????';
+  const mark = sid && String(row.sid) === String(sid) ? '[本会话]' : `[会话 ${code}]`;
+  return `- ${mark} ${clock(row.t)} ${who}${tag}：${text}`;
 }
 
 /**
@@ -415,7 +418,7 @@ export function renderStack(
   }
 
   const rawCount = [...globals, ...locals].filter((item) => item.raw).length;
-  const head = `${STACK_MARK} 最近 ${globals.length + locals.length} 条（每会话按字数预算取整轮；最近 ${rawCount} 条原文）`;
+  const head = `${STACK_MARK} 最近 ${globals.length + locals.length} 条（每会话按字数预算取整轮；最近 ${rawCount} 条原文）\n行首 [会话 xxxxxx] 是会话代码，不同代码不是同一个会话；[本会话] 指当前这句所在的会话。`;
   const parts = [head];
   if (globals.length > 0) parts.push(globals.map((item) => item.line).join('\n'));
   if (locals.length > 0) parts.push('【本会话】', ...locals.map((item) => item.line));
