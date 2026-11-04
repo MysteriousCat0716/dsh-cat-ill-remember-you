@@ -168,6 +168,21 @@ CREATE TABLE IF NOT EXISTS persona (
 );
 CREATE INDEX IF NOT EXISTS idx_persona_target ON persona (target, importance, t);
 
+-- 人物卡：谁是谁。与 memories 分开存——人物是「按名字查得到」，不是「按语义想起来」。
+-- style 只放猫的描述（标「猫说」）；seen=0 表示没直接接触过，不替它编性格。
+CREATE TABLE IF NOT EXISTS people (
+  id       INTEGER PRIMARY KEY AUTOINCREMENT,
+  name     TEXT    NOT NULL UNIQUE,
+  aliases  TEXT    NOT NULL DEFAULT '[]',
+  who      TEXT    NOT NULL DEFAULT '',
+  relation TEXT    NOT NULL DEFAULT '',
+  style    TEXT    NOT NULL DEFAULT '',
+  seen     INTEGER NOT NULL DEFAULT 0,
+  source   TEXT    NOT NULL DEFAULT '',
+  t        INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_people_name ON people (name);
+
 -- full 模式每轮都会写一行 shadow_v2，按 sid 查旧块时没有索引会全表扫。
 CREATE INDEX IF NOT EXISTS idx_shadow_v2_sid ON shadow_v2 (sid, applied);
 -- used 结算每轮跑两条语句（结算 UPDATE + 判定 SELECT），没有索引就是全表扫；
