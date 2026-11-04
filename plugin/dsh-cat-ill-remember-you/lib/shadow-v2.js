@@ -176,7 +176,26 @@ export function splitKeep(entries, keep = DEFAULT_KEEP) {
 }
 
 /**
- * 首句 + 尾句 + 中段按句从后往前填。预算不够时宁可只保首尾，
+ * 句子权重：思考要接的是「为什么」和「定了什么」，不是过程描述。
+ * 命中的句子在预算争夺里先占位，剩下的才轮到时间近的。
+ */
+const WEIGHT_RE = /(因为|所以|决定|结论|不报|采用|不要|记住|以后|约定|必须|不能|原因|判据|改成)/;
+
+function sentenceScore(text) {
+  const s = String(text ?? '');
+  let score = 0;
+  if (WEIGHT_RE.test(s)) score += 3;
+  if (/\d/.test(s)) score += 1;
+  return score;
+}
+
+/** 一条消息里最高的句分：整条判价值时用它，不重复切句。 */
+function bestSentenceScore(text) {
+  return sentenceScore(text);
+}
+
+/**
+ * 首句 + 尾句 + 中段按句权重挑。预算不够时宁可只保首尾，
  * 也不退回「取前 N 字」——那样丢的恰好是结论。
  * @param {string} text
  * @param {number} budget
@@ -196,12 +215,20 @@ function condenseBody(text, budget) {
     .split(/(?<=[。；！？!?])/)
     .map(squash)
     .filter(Boolean);
-  let picked = '';
-  for (let i = sentences.length - 1; i >= 0; i -= 1) {
-    const piece = sentences[i];
-    if (picked.length + piece.length > middleBudget) break;
-    picked = piece + picked;
+  // 中段按权重挑：带理由/决定的句子先占位，同分时靠后的先要（结论多在末尾）。
+  const ranked = sentences
+    .map((piece, index) => ({ piece, index, score: sentenceScore(piece) }))
+    .sort((a, b) => b.score - a.score || b.index - a.index);
+  const chosen = [];
+  let used = 0;
+  for (const item of ranked) {
+    if (used + item.piece.length > middleBudget) continue;
+    chosen.push(item);
+    used += item.piece.length;
   }
+  // 挑完还原原句序，不然读起来是跳的。
+  chosen.sort((a, b) => a.index - b.index);
+  const picked = chosen.map((item) => item.piece).join('');
   return picked ? `${headText}…${picked}…${tailText}` : `${headText}…${tailText}`;
 }
 
@@ -299,28 +326,37 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note
     (note ? `${note}\n` : '');
   // 尾部那段说明也要占预算：它只在「塞不下」时出现，长度不可预知，先留 70 字。
   const limit = Math.max(80, maxChars - header.length - 10 - 70);
-  // 两遍填：先用户，后助手。
-  // 用户说的话信息密度最高——锚点、编号、约定、当前要问的事都在这里；
-  // 助手的长回复是过程。按时间从近到远填，预算不够时先舍助手。
+  // 统一排序，不再按角色分两遍：用户的话密度高，但决定和理由常在我这边。
+  // 价值分 = 句分 + 角色基础 + 时间权重；最近 6 条保底，避免状态句被挤掉。
+  const scored = [];
+  for (let index = 0; index < list.length; index += 1) {
+    const entry = list[index];
+    const text = condense(entry);
+    if (!text) continue;
+    const recency = (index / Math.max(1, list.length - 1)) * 2;
+    const roleBase = entry.role === 'user' ? 2 : 1;
+    scored.push({ entry, index, text, score: bestSentenceScore(entry.text) + roleBase + recency });
+  }
+  scored.sort((a, b) => b.score - a.score || b.index - a.index);
   const picked = [];
   const filled = new Set();
   let size = 0;
-  for (const pass of ['user', 'assistant']) {
-    for (let index = list.length - 1; index >= 0; index -= 1) {
-      if (filled.has(index)) continue;
-      const entry = list[index];
-      if ((entry.role === 'user') !== (pass === 'user')) continue;
-      const text = condense(entry);
-      if (!text) continue;
-      const prefix = entry.role === 'user' ? '用户' : '助手';
-      // 行首带 seq：既能看出谁先说谁后说，也能按号回查原文。
-      const line = `- [${entry.seq}] ${prefix}: ${text}`;
-      if (size + line.length + 1 > limit) continue;
-      picked.push({ seq: entry.seq, line });
-      filled.add(index);
-      size += line.length + 1;
-    }
+  const add = (item) => {
+    if (filled.has(item.index)) return;
+    const prefix = item.entry.role === 'user' ? '用户' : '助手';
+    // 行首带 seq：既能看出谁先说谁后说，也能按号回查原文。
+    const line = `- [${item.entry.seq}] ${prefix}: ${item.text}`;
+    if (size + line.length + 1 > limit) return;
+    picked.push({ seq: item.entry.seq, line });
+    filled.add(item.index);
+    size += line.length + 1;
+  };
+  // 保底：最近 6 条先占位，不管分数——当前状态比历史结论更要紧。
+  for (let index = Math.max(0, list.length - 6); index < list.length; index += 1) {
+    const item = scored.find((candidate) => candidate.index === index);
+    if (item) add(item);
   }
+  for (const item of scored) add(item);
   picked.sort((left, right) => left.seq - right.seq);
   const lines = picked.map((item) => item.line);
   if (lines.length === 0) {
