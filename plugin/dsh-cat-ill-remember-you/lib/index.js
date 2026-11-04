@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 
 import { openStore, pendingCount } from './db.js';
 import { refine } from './extract.js';
@@ -238,7 +239,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.20',
+    version: '0.8.21',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -310,6 +311,13 @@ export function apply(ctx) {
           fs.mkdirSync(path.dirname(PREVIEW_LOG), { recursive: true });
           fs.appendFileSync(PREVIEW_LOG, `${header}\n${row.text}\n${'-'.repeat(70)}\n`, 'utf8');
           log(`panel: preview sid=${sid} chars=${row.charsAfter}`);
+          // 写完就用记事本打开，省掉「去文件夹里找」那一步。
+          // 打不开不影响写入结果，只在日志里记一笔。
+          try {
+            execFile('notepad.exe', [PREVIEW_LOG], () => {});
+          } catch (error) {
+            log(`preview open failed: ${error?.message ?? error}`);
+          }
           return {
             ok: true,
             value: { path: PREVIEW_LOG, before: row.charsBefore, after: row.charsAfter, text: row.text },

@@ -136,7 +136,7 @@ window.__ModuleLoader__.load({
         setError('');
         try {
           const res = await call('preview');
-          setPreviewInfo(`已写入 ${res.path}（${res.before} → ${res.after} 字）`);
+          setPreviewInfo(`已写入并用记事本打开 ${res.path}（${res.before} → ${res.after} 字）`);
         } catch (e) {
           setError(String(e && e.message ? e.message : e));
         } finally {
