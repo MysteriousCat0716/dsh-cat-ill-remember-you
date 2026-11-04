@@ -576,10 +576,14 @@ export function planShadowV2(
   // 先判白名单再遍历：白名单外的会话占绝大多数，之前每次都要把整段
   // surface 走一遍才发现不记账。
   const mode = replaceMode(sid);
-  if (mode === 'off') return null;
+  // dryRun 是「如果开了会怎样」的推演：白名单关着也要能算。否则面板上的
+  // 预览按钮永远只会回「没有可替换的历史」，那句话的意思是「你这会话没开
+  // 替换」而不是「历史太短」。
+  if (mode === 'off' && !dryRun) return null;
   // append 只推演：选区按 full 算（要测的就是「全换之后够不够」），
   // 记账与 apply 全部跳过——pre-step 只拿 text 拼到上下文末尾。
-  const selectMode = mode === 'append' ? 'full' : mode;
+  // dryRun 同样按 full 算：预览要看的就是「全换之后是什么样」。
+  const selectMode = mode === 'append' || mode === 'off' ? 'full' : mode;
   // full 每轮全量 SELECT 该 sid 的 turns（shadow-v2.js 里最贵的一次查询），
   // 行数越多越慢。超过 FULL_MAX_ROWS 就降级到 roll：成本从 O(n) 回到 O(1)。
   let fullRows = 0;

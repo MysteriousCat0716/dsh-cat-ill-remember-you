@@ -238,7 +238,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.16',
+    version: '0.8.17',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -253,10 +253,13 @@ export function apply(ctx) {
     previewLog: PREVIEW_LOG,
   });
   const LAYER_KEYS = ['STACK', 'PERSONA', 'PEOPLE', 'RECALL', 'ENRICH'];
-  ctx.inject(['connection'], (webContext) => {
+  // connection.rpc.handle 内部要 webServer.register，owner ctx 必须连 webServer 一起注入
+  ctx.inject(['connection', 'webServer'], (webContext) => {
     const connection = webContext.connection;
-    if (!connection?.rpc?.handle) return;
-    connection.rpc.handle('/dsh-cat-memory', async (endpoint, input) => {
+    if (!connection?.register) return;
+    try {
+      // rpc.handle 用的是服务内部 ctx，访问不到 webServer；显式把 webContext（注入了 webServer）当 owner 传进去。
+      connection.register(webContext, '/dsh-cat-memory', async (endpoint, input) => {
       try {
         if (endpoint === 'state') return { ok: true, value: panelState() };
         if (endpoint === 'set') {
@@ -285,7 +288,9 @@ export function apply(ctx) {
           const db = currentStore();
           if (!db) throw new Error('记忆库没打开');
           // 只推演：不写 surface、不记账、不看冷却，随时可以点。
-          const row = planShadowV2(lastSession, db, true);
+          // 第三个参数是 options 对象，不是布尔；写成 true 时 dryRun 会是
+          // undefined，等于没开推演，白名单外直接返回 null。
+          const row = planShadowV2(lastSession, db, { dryRun: true });
           if (!row) throw new Error('这一轮没有可替换的历史（消息太少，或还没到可换的区间）');
           const header =
             `[${new Date().toISOString()}] sid=${lastSid.slice(-6)} range=${row.rangeStart}-${row.rangeEnd} ` +
@@ -307,7 +312,10 @@ export function apply(ctx) {
         };
       }
     });
-    log('panel rpc: /dsh-cat-memory registered');
+      log('panel rpc: /dsh-cat-memory registered');
+    } catch (error) {
+      log(`panel rpc failed: ${error?.message ?? error}`);
+    }
   });
 
   ctx.on('session/event', (session, event) => {

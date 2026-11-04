@@ -536,6 +536,28 @@ test('planShadowV2: 会话不在白名单时什么都不做', async () => {
   }
 });
 
+test('planShadowV2: dryRun 在白名单外也出推演（预览不该被开关挡住）', async () => {
+  const db = openStore(':memory:');
+  const session = fakeSession(textEntries('消息', 14), 'sid-other');
+  const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+  const list = tempSessionList(['sid-replace']);
+  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  try {
+    const plan = planShadowV2(session, db, { keep: 10, now: 1, dryRun: true });
+    assert.ok(plan, '白名单外 dryRun 也要算出一份计划，否则面板的预览按钮永远没东西');
+    assert.ok(plan.text.length > 0);
+    await tick();
+    assert.equal(session.appended.length, 0);
+    const count = db.prepare('SELECT COUNT(*) AS n FROM shadow_v2').get().n;
+    assert.equal(Number(count), 0, 'dryRun 不记账');
+  } finally {
+    if (previousList === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
+    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
+    list.cleanup();
+    db.close();
+  }
+});
+
 test('renderReplacement: 长回复保首句和尾句，结论不再被截掉', () => {
   const head = '我先看了 lib 下的实现，';
   const middle = '这一段是中间过程。'.repeat(20);
