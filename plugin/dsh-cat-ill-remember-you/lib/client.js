@@ -99,6 +99,7 @@ window.__ModuleLoader__.load({
       const [error, setError] = React.useState('');
       const [busy, setBusy] = React.useState('');
       const [previewInfo, setPreviewInfo] = React.useState('');
+      const [contextInfo, setContextInfo] = React.useState('');
 
       const load = React.useCallback(() => {
         call('state')
@@ -137,6 +138,20 @@ window.__ModuleLoader__.load({
         try {
           const res = await call('preview');
           setPreviewInfo(`已写入并用记事本打开 ${res.path}（${res.before} → ${res.after} 字）`);
+        } catch (e) {
+          setError(String(e && e.message ? e.message : e));
+        } finally {
+          setBusy('');
+        }
+      };
+
+      const contextPreview = async () => {
+        if (busy) return;
+        setBusy('CONTEXT');
+        setError('');
+        try {
+          const res = await call('context');
+          setContextInfo(`已写入并用记事本打开 ${res.path}（${res.chars} 字）`);
         } catch (e) {
           setError(String(e && e.message ? e.message : e));
         } finally {
@@ -297,16 +312,36 @@ window.__ModuleLoader__.load({
                     busy === 'PREVIEW' ? '计算中…' : '输出预览',
                   ),
                   h(
+                    'button',
+                    {
+                      key: 'ctxbtn',
+                      type: 'button',
+                      disabled: state === null || busy === 'CONTEXT',
+                      onClick: contextPreview,
+                      style: {
+                        padding: '5px 12px',
+                        borderRadius: 6,
+                        border: `1px solid ${line}`,
+                        background: 'transparent',
+                        color: text1,
+                        fontSize: 12,
+                        cursor: state === null || busy === 'CONTEXT' ? 'default' : 'pointer',
+                        opacity: state === null || busy === 'CONTEXT' ? 0.5 : 1,
+                      },
+                    },
+                    busy === 'CONTEXT' ? '计算中…' : '整轮上下文',
+                  ),
+                  h(
                     'span',
                     { key: 'path', style: { fontSize: 11, color: text2, wordBreak: 'break-all' } },
-                    previewInfo || (state && state.previewLog ? state.previewLog : ''),
+                    previewInfo || contextInfo || (state && state.previewLog ? state.previewLog : ''),
                   ),
                 ],
               ),
               h(
                 'div',
                 { key: 'note', style: { fontSize: 11, color: text2, marginTop: 8 } },
-                '预览只推演：不改历史、不记账、不看冷却。文本追加写进上面这个文件，随时可以打开对照。',
+                '两个按钮都不改历史、不记账、不看冷却。「输出预览」只看替换块；「整轮上下文」看这一轮模型真正会收到的全文（栈、记忆、替换块、保留区）。',
               ),
             ],
           ),

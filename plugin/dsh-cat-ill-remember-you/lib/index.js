@@ -222,6 +222,7 @@ export function apply(ctx) {
   // 替换白名单与预览日志都是磁盘文件：面板只做读写，不另存一份状态。
   const REPLACE_FILE = path.join(os.homedir(), '.dsh', 'cache', 'replace-sessions.txt');
   const PREVIEW_LOG = path.join(os.homedir(), '.dsh', 'cache', 'replace-preview.log');
+  const CONTEXT_LOG = path.join(os.homedir(), '.dsh', 'cache', 'context-preview.log');
   const readWhitelist = () => {
     try {
       return fs
@@ -239,7 +240,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.22',
+    version: '0.8.23',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -323,6 +324,53 @@ export function apply(ctx) {
             ok: true,
             value: { path: PREVIEW_LOG, before: row.charsBefore, after: row.charsAfter, text: row.text },
           };
+        }
+        if (endpoint === 'context') {
+          // 「整轮上下文」预览：回答「现在开替换，下一轮模型会看到什么」。
+          // 唯一估的是记忆检索——它拿当前句当 query，没有下一轮的输入，
+          // 上一轮 pre-step 的 hint 本来就是按最后那条用户消息算的，所以直接沿用。
+          const db = currentStore();
+          if (!db) throw new Error('记忆库没打开');
+          let session = lastSession;
+          if (!session) {
+            const last = db.prepare('SELECT sid FROM turns ORDER BY t DESC LIMIT 1').get();
+            if (last?.sid) session = ctx.sessions.get(last.sid) ?? null;
+          }
+          if (!session) session = ctx.sessions.list().at(-1) ?? null;
+          if (!session) throw new Error('还没有会话记录，先发一句话');
+          const sid = sidOf(session);
+          const hint = hintBySid.get(sid) ?? lastBaseHint ?? '';
+          const row = planShadowV2(session, db, { dryRun: true });
+          const tail = db
+            .prepare('SELECT seq, role, text FROM turns WHERE sid = ? ORDER BY seq DESC LIMIT 6')
+            .all(sid)
+            .reverse();
+          const lines = [
+            `[${new Date().toISOString()}] sid=${sid.slice(-6)} 整轮上下文预览`,
+            '下面从上到下就是模型会看到的东西。只有「记忆检索」那一块是按最后一句估的，其余都是现算。',
+            '',
+            '=== 一 · 全局栈 + 记忆块（上一轮 pre-step 实际注入）===',
+            hint || '（这一轮还没有 pre-step 记录）',
+            '',
+            row
+              ? '=== 二 · 替换块（若现在开替换，这段会替代被压掉的历史）==='
+              : '=== 二 · 替换块：无（历史还没到可换的区间）===',
+            row?.text ?? '',
+            '',
+            '=== 三 · 保留区原文（替换时不动，从 turns 表取最后几条）===',
+            ...tail.map((r) => `- [${r.seq}] ${r.role === 'user' ? '用户' : '助手'}：${String(r.text).slice(0, 400)}`),
+            '',
+          ];
+          const text = lines.join('\n');
+          fs.mkdirSync(path.dirname(CONTEXT_LOG), { recursive: true });
+          fs.writeFileSync(CONTEXT_LOG, text, 'utf8');
+          log(`panel: context sid=${sid} chars=${text.length}`);
+          try {
+            execFile('notepad.exe', [CONTEXT_LOG], () => {});
+          } catch (error) {
+            log(`context open failed: ${error?.message ?? error}`);
+          }
+          return { ok: true, value: { path: CONTEXT_LOG, chars: text.length } };
         }
         throw new Error(`未知的 endpoint：${endpoint}`);
       } catch (error) {
