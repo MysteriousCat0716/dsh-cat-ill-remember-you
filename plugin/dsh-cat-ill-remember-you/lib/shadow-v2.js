@@ -393,9 +393,29 @@ export function keyTokens(entries) {
     if (NOISE_RE.test(match[0])) continue;
     tokens.add(match[0]);
   }
-  for (const entity of entitiesOf(source)) tokens.add(entity);
+  // 跨「消息」计数，不是总出现次数：同一句在一轮里重复三遍不代表它是标识符，
+  // 跨轮复现才是。只在定义处出现一次的「X：」多半是句子（「你每轮只做三件事：」）。
+  const msgCount = (token) => list.filter((entry) => String(entry.text ?? '').includes(token)).length;
+  // 可引用性：真东西能被「关于 X / X 的 / 修改 X」这样谈论，句子不能。
+  // 中文没有冠词和大小写，这一条是便宜的代理判据。
+  const referable = (token) => {
+    const t = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp('(关于|针对|围绕)\\s*' + t + '|' + t + '\\s*(的|中|里|上|下|现在|有)|(修改|删除|使用|调用|改)\\s*' + t).test(source);
+  };
+  for (const entity of entitiesOf(source)) {
+    if (msgCount(entity) >= 2 && referable(entity)) tokens.add(entity);
+  }
   for (const anchor of anchorsOf(source)) tokens.add(anchor);
-  return [...tokens];
+  // 归一化：反引号、转义反斜杠、尾部标点不该跟着 token 走。
+  const norm = (token) =>
+    String(token)
+      .replace(/^[`（(\s]+/, '')
+      .replace(/[`）)\s。，；：,;]+$/, '')
+      .replace(/\\\\/g, '\\')
+      .trim();
+  const cleaned = [...new Set([...tokens].map(norm).filter(Boolean))];
+  // 短 token 被长 token 包含时丢掉：`dsh`、`package.js` 已经出现在完整路径里。
+  return cleaned.filter((token) => !cleaned.some((other) => other !== token && other.includes(token)));
 }
 
 const PROMISE_RE = /(不要|别再|别忘|记住|以后|约定|答应|下次|永远|说好)/;
