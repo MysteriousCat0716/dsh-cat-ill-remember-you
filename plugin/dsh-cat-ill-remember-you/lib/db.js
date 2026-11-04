@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS memories (
   supersedes INTEGER,
   rule_ver   TEXT    NOT NULL DEFAULT 'r0',
   -- 同一话题被反复说：不复制正文，只升票数。≥3 进 persona 建议清单。
+  -- reference 不算：转来的一段话不是他的立场。
   mentions   INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories (tier, last_used);

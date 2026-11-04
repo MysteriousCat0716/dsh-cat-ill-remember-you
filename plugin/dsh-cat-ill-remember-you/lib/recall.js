@@ -191,6 +191,7 @@ function rowToItem(row, source) {
     summary: String(row.summary ?? '').trim() || String(row.text ?? '').slice(0, 80),
     text: row.text,
     t: Number(row.t ?? 0),
+    mentions: Number(row.mentions ?? 0),
     anchors: parseList(row.anchors),
     entities: parseList(row.entities),
     why: '',
@@ -207,7 +208,7 @@ function rowToItem(row, source) {
 function personaOf(db) {
   const rows = db
     .prepare(
-      `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
+      `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
        WHERE tier = 'active' AND origin = 'chat' AND kind IN ('preference', 'decision')
        ORDER BY t DESC LIMIT 100`,
     )
@@ -313,7 +314,11 @@ function weightOf(db, term) {
 // 只注入过一两次说明不了什么，所以按样本量降权；上限 1.5 分，
 // 不到一条锚点命中（2×weight）的量级，避免「用过的永远赢」。
 const usageCaches = new WeakMap();
-function usageOf(db) {
+const USAGE_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+const USAGE_PRIOR_N = 3;
+const USAGE_PRIOR_P = 0.3;
+
+function usageOf(db, now = Date.now()) {
   let cache = usageCaches.get(db);
   if (cache) return cache;
   cache = new Map();
@@ -323,10 +328,10 @@ function usageOf(db) {
         `SELECT memory_id, COUNT(*) AS n,
                 SUM(CASE WHEN used = 1 THEN 1 ELSE 0 END) AS u
            FROM recall_log
-          WHERE section = 'recall' AND memory_id IS NOT NULL
+          WHERE section = 'recall' AND memory_id IS NOT NULL AND t > ?
           GROUP BY memory_id`,
       )
-      .all()) {
+      .all(now - USAGE_WINDOW_MS)) {
       cache.set(Number(row.memory_id), { n: Number(row.n) || 0, u: Number(row.u) || 0 });
     }
   } catch {
@@ -335,23 +340,27 @@ function usageOf(db) {
   usageCaches.set(db, cache);
   return cache;
 }
-function usedBoost(db, id) {
-  const hit = usageOf(db).get(Number(id));
-  if (!hit || !hit.n) return 0;
-  const confidence = Math.min(1, hit.n / 3);
-  return (hit.u / hit.n) * confidence * 1.5;
+function usedBoost(db, id, now = Date.now()) {
+  const hit = usageOf(db, now).get(Number(id));
+  // 单次使用和巧合分不开（回复里出现一个词，不等于这条记忆被用上）：
+  // u < 2 不起评，比任何比率形式都便宜。
+  if (!hit || hit.n < 2 || hit.u < 2) return 0;
+  const p0 = 0.3; // 先验：全局 used 率大约三成
+  // 贝叶斯平滑：小样本被拉回先验，「碰巧一次」天然不动。
+  const posterior = (hit.u + 3 * p0) / (hit.n + 3);
+  // 上限 0.8：中频锚点命中 2 × (1/ln(2+10)) ≈ 0.8，boost 不该压过它。
+  return Math.min(0.8, Math.max(0, (posterior - p0) * 1.2));
 }
-function scoreOf(item, query, db) {
+function scoreOf(item, query, db, now = Date.now()) {
   let score = 0;
   for (const value of item.anchors) if (query.anchors.includes(value)) score += 2 * weightOf(db, value);
   for (const value of item.entities) if (query.entities.includes(value)) score += weightOf(db, value);
   // 「钉子」：显式 permanent 的记忆不靠时间赢，也不该被更近的条目挤掉。
   if (item.retention === 'permanent') score += 2;
   // 提取强度：越常被真的用出来的记忆，越容易被再取回。
-  score += usedBoost(db, item.id);
-  // 情绪加一点权重：人记住一件事，常常先记住当时的感受，
-  // 隔很久还能想起「那天你很难过」，而不是那天的技术细节。
-  if (item.kind === 'emotion') score += 0.5;
+  score += usedBoost(db, item.id, now);
+  // 情绪只改保留期（retentionOf），不再额外加分：
+  // 同一判据触发两次效果，会把「有点烦」这类词表误判放大一倍。
   return score;
 }
 
@@ -432,7 +441,7 @@ export async function retrieve(
     const marks = query.entities.map(() => '?').join(',');
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
          WHERE tier = 'active' AND origin = 'chat'
            AND EXISTS (SELECT 1 FROM json_each(memories.entities) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
@@ -446,7 +455,7 @@ export async function retrieve(
         note(item, given.has(`memory:${item.id}`) ? 'given' : 'already-seen');
         continue;
       }
-      item.score = scoreOf(item, query, db);
+      item.score = scoreOf(item, query, db, now);
       if (!best || item.score > best.score) best = item;
     }
     if (best) {
@@ -463,7 +472,7 @@ export async function retrieve(
     const marks = toolAnchors.map(() => '?').join(',');
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
          WHERE tier = 'active' AND origin = 'chat'
            AND EXISTS (SELECT 1 FROM json_each(memories.anchors) WHERE json_each.value IN (${marks}))
          ORDER BY t DESC LIMIT 6`,
@@ -477,7 +486,7 @@ export async function retrieve(
         note(item, given.has(`memory:${item.id}`) ? 'given' : 'already-seen');
         continue;
       }
-      item.score = scoreOf(item, query, db);
+      item.score = scoreOf(item, query, db, now);
       if (!best || item.score > best.score) best = item;
     }
     if (best) {
@@ -491,7 +500,7 @@ export async function retrieve(
   // L1: the newest three distilled memories double as the sliding cache.
   const cacheRows = db
     .prepare(
-      `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
+      `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
        WHERE tier = 'active' AND origin = 'chat' ORDER BY t DESC LIMIT ?`,
     )
     .all(CACHE_SIZE);
@@ -501,7 +510,7 @@ export async function retrieve(
       note(item, given.has(`memory:${item.id}`) ? 'given' : 'no-share');
       continue;
     }
-    item.score = scoreOf(item, query, db) || 1;
+    item.score = scoreOf(item, query, db, now) || 1;
     item.why = whyOf(item, query) || '刚才还在说它，缓存里直接取。';
     push(item);
   }
@@ -522,7 +531,7 @@ export async function retrieve(
   if (clauses.length) {
     const rows = db
       .prepare(
-        `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
+        `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
          WHERE tier IN ('active','dormant') AND origin = 'chat' AND (${clauses.join(' OR ')})
          ORDER BY t DESC LIMIT 24`,
       )
@@ -533,7 +542,7 @@ export async function retrieve(
         note(item, 'given');
         continue;
       }
-      item.score = scoreOf(item, query, db);
+      item.score = scoreOf(item, query, db, now);
       item.why = whyOf(item, query);
       push(item);
     }
@@ -564,7 +573,7 @@ export async function retrieve(
           }
           const row = db
             .prepare(
-              `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
+              `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
                WHERE id = ? AND tier IN ('active','dormant') AND origin = 'chat'`,
             )
             .get(candidate.memory_id);
@@ -596,7 +605,7 @@ export async function retrieve(
       const values = terms.map((term) => `%${escapeLike(term)}%`);
       const rows = db
         .prepare(
-          `SELECT id, kind, summary, text, entities, anchors, t, confidence, retention FROM memories
+          `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
            WHERE tier = 'active' AND origin = 'chat' AND (${like})
            ORDER BY t DESC LIMIT 200`,
         )
@@ -667,6 +676,7 @@ export async function retrieve(
         summary: text.slice(0, 120),
         text,
         t: Number(row.t ?? 0),
+    mentions: Number(row.mentions ?? 0),
         anchors: anchorsOf(text),
         entities: entitiesOf(text),
         why: '',
@@ -675,7 +685,7 @@ export async function retrieve(
       // 同一句已经在上下文里的情况由上一行的 text 比较挡掉。
       // 没有名词时 whyOf 交回空串，push 会把整条丢掉；这里补一句来源说明，
       // 否则「只有指代」这条通路等于白改。
-      item.score = terms.length ? scoreOf(item, query, db) : 0.05;
+      item.score = terms.length ? scoreOf(item, query, db, now) : 0.05;
       item.why = terms.length
         ? whyOf(item, query)
         : '这一轮只有指代、抽不出名词；按「上次那件事」回看最近的原文。';
@@ -814,6 +824,12 @@ export function markRecallUsed(db, { sid, text }) {
   return marked;
 }
 
+function fmtDate(t) {
+  const d = new Date(Number(t));
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
 function fmtShort(t) {
   const d = new Date(Number(t));
   const p = (n) => String(n).padStart(2, '0');
@@ -830,7 +846,7 @@ export function renderHint(hits) {
     lines.push('');
     lines.push(title);
     list.forEach((hit, index) => {
-      const when = hit.t ? new Date(hit.t).toISOString().slice(0, 10) : '';
+      const when = hit.t ? fmtDate(hit.t) : '';
       const kind =
         hit.kind === 'user'
           ? '原话'
@@ -846,7 +862,11 @@ export function renderHint(hits) {
       const where =
         hit.kind === 'reference' ? '（原文在 turns，需要时用 session_event_search 取）' : '';
       const lastUsed = hit.lastUsed ? `（上次用在 ${fmtShort(hit.lastUsed)}）` : '';
-      lines.push(`${index + 1}. （${kind}${when ? ` · ${when}` : ''}${conf}）${hit.summary}${where}${lastUsed}`);
+      // 同一件事说到第三次：只在呈现层标出来，数据不动。
+      const repeated = hit.mentions >= 3 ? `反复出现（${hit.mentions} 次）：` : '';
+      lines.push(
+        `${index + 1}. （${kind}${when ? ` · ${when}` : ''}${conf}）${repeated}${hit.summary}${where}${lastUsed}`,
+      );
       if (hit.scene) lines.push(`   当时：${hit.scene}`);
     });
   };

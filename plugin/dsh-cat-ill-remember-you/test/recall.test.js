@@ -342,6 +342,15 @@ test('renderHint: 转来的话只给指针，标明原文在 turns', async () =>
   assert.ok(text.includes('原文在 turns'));
 });
 
+test('renderHint: 提到三次的事，只在呈现层标「反复出现」', async () => {
+  const text = renderHint([
+    { kind: 'decision', summary: '以后 dsh-memory 的原文都先读再看', t: Date.UTC(2026, 10, 4), mentions: 3 },
+    { kind: 'fact', summary: '一次性的事', t: Date.UTC(2026, 10, 4), mentions: 1 },
+  ]);
+  assert.ok(text.includes('反复出现（3 次）：'));
+  assert.ok(!text.includes('反复出现（1 次）'));
+});
+
 test('renderHint: persona and on-demand hits get separate sections', async () => {
   const text = renderHint([
     { kind: 'preference', summary: '不要豆包味', t: Date.UTC(2026, 10, 2), section: 'persona' },

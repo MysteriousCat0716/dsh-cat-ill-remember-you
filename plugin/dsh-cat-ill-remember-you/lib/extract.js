@@ -91,7 +91,7 @@ const PREFERENCE = /偏好|更喜欢|喜欢|讨厌|不喜欢|受不了|烦死|�
  * 只看用户自己的话：助手回复里的「决定」「喜欢」不该改变这条记忆的类。
  * @param {string} userText
  */
-export function classify(userText) {
+export function classify(userText, botText = '') {
   // 转发先认：别人原文里什么词都有，放后面会被「决定」「喜欢」抢走。
   if (String(userText ?? '').length >= 120 && TRANSFER.test(String(userText ?? ''))) {
     return 'reference';
@@ -112,6 +112,17 @@ export function classify(userText) {
     /决定|定了|就这样|采用|选用|还是用|以后|下次|记住|不再|改成|必须|规则|约定/.test(hisWords) ||
     DECISION_HINT.test(hisWords) ||
     /就按|按你说的|听你的|依你|就这个|就它/.test(hisWords)
+  ) {
+    return 'decision';
+  }
+  // 提议通常是助手做的，背书是他给的：他只回一句「好」「行」，
+  // 同块最后一条助手消息里有决定词，这条才算成立。
+  // 只管短同意句——长段落里的「好」可能是别的意思，别套。
+  if (
+    hisWords.trim().length <= 12 &&
+    /^(好|行|可以|嗯|对|就这个|就这样|听你的|按你说的|依你|就这么办)[。！!嗯…\s]*$/.test(hisWords.trim()) &&
+    (/决定|定了|就这样|采用|选用|以后|下次|记住|不再|改成|必须|规则|约定/.test(String(botText ?? '')) ||
+      DECISION_HINT.test(String(botText ?? '')))
   ) {
     return 'decision';
   }
@@ -276,7 +287,7 @@ export function candidateOf(block) {
   // 纯回执（「好的」「嗯」）不立记忆
   if (userText.length < 6 && botText.length < 20) return null;
 
-  const kind = classify(userText);
+  const kind = classify(userText, botText);
   const subject = subjectOf(userText, botText, kind);
   // 我的过程和计划不立记忆（设计-哪些话不建记忆 第六节）。只拦「过程句」，
   // 不拦我把他的决定总结成一句话——那种块的主语本来就该是他的嘴。
@@ -408,25 +419,24 @@ function unionList(a, b) {
 }
 
 /**
- * 情景压成语义：同一件事说到第三次时，把它从「一条情景」折成「一个模式」。
+/**
+ * 情景压成语义：同一件事说到第三次时，让它在呈现上从「一条情景」变成「一个模式」。
  *
- * 不新建条——新建会让同一件事在召回里出现两次；原地把这条升成模式，
- * 前几次算进它。注入时读到的是「这件事反复出现」，不是第三次的细节。
- * 原条不降级：先让两者都在，看回放时用的是哪一条，再决定要不要拆。
+ * 不新建条——新建会让同一件事在召回里出现两次。
+ * 也不改 summary / text——判错一次，一条普通记忆会被永久打上「反复出现」前缀，
+ * 而「反复出现」本来就是呈现层该说的话（renderHint 看到 mentions >= 3 才这样写）。
+ * 数据层只做并集：锚点、实体是加法，可逆，改善以后匹配。
  */
 function foldPattern(db, id, item) {
   const row = db
-    .prepare('SELECT mentions, summary, text, anchors, entities FROM memories WHERE id = ?')
+    .prepare('SELECT mentions, anchors, entities FROM memories WHERE id = ?')
     .get(id);
   if (!row) return;
-  if (String(row.summary ?? '').startsWith('反复出现：')) return;
   const count = Number(row.mentions) || 0;
   if (count < 3) return;
   const anchors = unionList(namesOf(row.anchors), item.anchors);
   const entities = unionList(namesOf(row.entities), item.entities);
-  db.prepare('UPDATE memories SET summary = ?, text = ?, anchors = ?, entities = ? WHERE id = ?').run(
-    `反复出现：${row.summary}`,
-    `${row.text}\n\n——同一件事已经提过 ${count} 次，这条是第 ${count} 次；前几次算进这里，不再单列。`,
+  db.prepare('UPDATE memories SET anchors = ?, entities = ? WHERE id = ?').run(
     JSON.stringify(anchors),
     JSON.stringify(entities),
     id,
