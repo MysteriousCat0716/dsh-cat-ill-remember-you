@@ -334,3 +334,30 @@ test('pendingReforge: 只返回 rule_ver 比当前旧的行', () => {
   assert.equal(rows[0].rule_ver, 'r0');
   db.close();
 });
+
+test('classify: 转发别人的话单独一类，不冒充决定', () => {
+  const copilot = `copilot回复了\n${'我接受你的修正，并按当前代码状态重新审查了一轮。'.repeat(8)}`;
+  assert.equal(classify(copilot, copilot), 'reference');
+
+  const friend = `朋友说 对于相关性 可以增加时间因子 用时间相关性和事实相关性共同判断相关性\n${'还有 朋友说 记忆久了 会出现两段记忆记录一样的提示词 这个我没听懂'.repeat(3)}`;
+  assert.equal(classify(friend, friend), 'reference');
+
+  // 短句里提到朋友，还是他自己的事，不算转发
+  assert.equal(classify('朋友说他明天来', '朋友说他明天来'), 'fact');
+});
+
+test('candidateOf: 转发只留指针，不把别人的论证当成我们的结论', () => {
+  const body = '这是一段很长的评审原文，讲的是记忆插件该怎么改。'.repeat(12);
+  const block = {
+    turns: [
+      { role: 'user', seq: 1, sid: 's', text: `copilot回复了\n${body}` },
+      { role: 'assistant', seq: 2, sid: 's', text: '这四条我看了。' },
+    ],
+  };
+  const c = candidateOf(block);
+  assert.ok(c);
+  assert.equal(c.kind, 'reference');
+  assert.equal(c.subject, 'user');
+  assert.match(c.summary, /^他转来一段话/);
+  assert.match(c.summary, /copilot回复了/);
+});

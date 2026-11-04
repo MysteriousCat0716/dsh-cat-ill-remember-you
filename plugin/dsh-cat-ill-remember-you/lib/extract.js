@@ -93,6 +93,10 @@ const PREFERENCE = /偏好|更喜欢|喜欢|讨厌|不喜欢|受不了|烦死|�
  */
 export function classify(userText, allText) {
   const sample = `${userText} ${allText}`;
+  // 转发先认：别人原文里什么词都有，放后面会被「决定」「喜欢」抢走。
+  if (String(userText ?? '').length >= 120 && TRANSFER.test(String(userText ?? ''))) {
+    return 'reference';
+  }
   // 偏好判据只认用户自己说的：助手附和一句「我也喜欢」不是他的偏好。
   if (PREFERENCE.test(String(userText ?? ''))) return 'preference';
   // 决定类强词其次：「以后……不要只靠分片」是决定，不是偏好
@@ -148,6 +152,12 @@ const SELF_STANCE = /我觉得|我认为|我在意|我不喜欢|我不想要|我
 
 // 我的过程句：这些是日志，不是判断。
 const PROCESS = /改完|改好|跑通|跑完|读完|写完|提交了|推上去|测试通过|接下来|下一步|我先|我这就|已经修好|已经改好|我打算|我准备|我查了|我看了|我读了|我发现了|我注意到|我改|我加|我删|我写|我跑|我看到了/;
+
+// 转发：开头一句就交代「这是谁说的」，后面接着别人的原文（copilot 评审、朋友建议、
+// B 站评论）。这类话既不是他的判断，也不是我的判断——只建指针，不让别人的话
+// 冒充我们的立场。长度门槛 120 字：短句「朋友说他想去看海」还是他自己的事。
+const TRANSFER =
+  /^[^\n]{0,24}(?:copilot|gpt|claude|glm|嘎啦吗|朋友|网友|群友|B站|哔哩|知乎)[^\n]{0,24}(?:说|回复|评价|发来|提到|看到|的观点|的看法|的话)/i;
 
 /**
  * Who a memory is about: the human or the assistant.
@@ -226,6 +236,14 @@ function digestOf(userText, botText, subject) {
   return answer ? (ask ? `${ask}｜${answer}` : answer) : ask;
 }
 
+/** 转发只留指针：记「他转来过什么」，不把别人的论证当成我们的结论。 */
+function referenceDigest(userText) {
+  const line = String(userText ?? '')
+    .split('\n')[0]
+    .trim();
+  return `他转来一段话（原文 ${String(userText ?? '').length} 字）：${head(stripMarkup(line), 60)}`;
+}
+
 /** 保留期：preference 是 persona 常驻内容，emotion 是短时效，其余走默认遗忘曲线。 */
 export function retentionOf(kind) {
   if (kind === 'preference') return 'permanent';
@@ -252,7 +270,7 @@ export function candidateOf(block) {
   // 我的过程和计划不立记忆（设计-哪些话不建记忆 第六节）。只拦「过程句」，
   // 不拦我把他的决定总结成一句话——那种块的主语本来就该是他的嘴。
   if (subject === 'assistant' && PROCESS.test(botText) && !SELF_STANCE.test(botText)) return null;
-  const summary = digestOf(userText, botText, subject);
+  const summary = kind === 'reference' ? referenceDigest(userText) : digestOf(userText, botText, subject);
   const scene = head(userText || botText, 50);
   return {
     kind,
