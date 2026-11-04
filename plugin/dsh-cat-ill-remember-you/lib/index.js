@@ -292,18 +292,9 @@ export function apply(ctx) {
     const current = blacklistLines();
     if (sid && !current.includes(sid)) writeBlacklist([...current, sid]);
   };
-  // 归档会话在核心库里没有标记：DSH 把会话目录从 sessions/ 移到 archive/sessions/。
-  // 右栏是插件自己查库列的，不看宿主的会话列表，所以要单独认一次归档。
-  const ARCHIVE_ROOT = path.join(os.homedir(), '.dsh', 'archive', 'sessions');
-  const isArchived = (sid) => {
-    if (!sid) return false;
-    const id = String(sid);
-    try {
-      return fs.existsSync(path.join(ARCHIVE_ROOT, id.startsWith('session-') ? id : `session-${id}`));
-    } catch {
-      return false;
-    }
-  };
+  // 归档会话在核心库里没有标记：DSH 把会话目录从 sessions/ 移到 archive/sessions/，
+  // 同时在工作区存储的 global.archivedSessionIds 里记一笔。两个都要认——目录只有真搬过去才有，
+  // 而「归档」在 UI 上只是隐藏，不一定搬目录。
   // 右栏要和宿主的会话列表（左栏）一致，而库只知道「哪些会话落过记忆」，
   // 不知道宿主列了哪些、删了哪些、归档了哪些。宿主的 workspace 存储里每个工作区
   // 有一份 sessionIds，global.archivedSessionIds 是归档。所以先取宿主列表，
@@ -332,6 +323,38 @@ export function apply(ctx) {
       return visibleCache;
     } catch {
       return null;
+    }
+  };
+  // 归档标记：workspace.json 的 global.archivedSessionIds 是宿主记录的真归档；
+  // archive/sessions 目录是搬走了的，两者任一命中都算。
+  let archivedCache = null;
+  let archivedCacheAt = 0;
+  const archivedSids = () => {
+    try {
+      const stat = fs.statSync(WORKSPACE_STORE);
+      if (!archivedCache || stat.mtimeMs !== archivedCacheAt) {
+        const data = JSON.parse(fs.readFileSync(WORKSPACE_STORE, 'utf8'));
+        archivedCache = new Set(
+          (data?.global?.archivedSessionIds ?? []).map((value) =>
+            String(value).replace(/^session-/, ''),
+          ),
+        );
+        archivedCacheAt = stat.mtimeMs;
+      }
+      return archivedCache;
+    } catch {
+      return null;
+    }
+  };
+  const ARCHIVE_ROOT = path.join(os.homedir(), '.dsh', 'archive', 'sessions');
+  const isArchived = (sid) => {
+    if (!sid) return false;
+    const id = String(sid).replace(/^session-/, '');
+    if (archivedSids()?.has(id)) return true;
+    try {
+      return fs.existsSync(path.join(ARCHIVE_ROOT, `session-${id}`));
+    } catch {
+      return false;
     }
   };
   const sessionList = () => {
@@ -365,7 +388,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.33',
+    version: '0.8.34',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
