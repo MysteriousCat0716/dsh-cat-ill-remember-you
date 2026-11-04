@@ -318,7 +318,7 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note
   // 实体·锚点清单先写：断链几乎都发生在这些 token 上，把它们钉在文本最前面。
   const keywords = keyTokens(list).slice(0, 24);
   // 约定句原样留：关键词救不了「以后不要怎样」，句子才行。
-  const promises = promiseLines(list, { max: 4, chars: 36 });
+  const promises = promiseLines(list, { max: 4, chars: 80 });
   const header =
     `[上下文替换｜旧消息压缩，非用户发言] 更早 ${list.length} 条（seq ${first}-${last}），原文事件仍在会话日志里、工具结果见下方索引：\n` +
     (keywords.length > 0 ? `关键词：${keywords.join('、')}\n` : '') +
@@ -386,7 +386,11 @@ export function keyTokens(entries) {
   // 实体/锚点抽取会漏掉它们，但它们恰恰是跨轮最需要认出的标识符。
   // 纯数字区间（`8-2197`、`2026-11-05`）不会命中，因为开头必须是字母或汉字。
   const tokens = new Set();
-  for (const match of source.matchAll(/[A-Za-z\u4e00-\u9fa5][A-Za-z\u4e00-\u9fa5_]*-[0-9]{1,4}/g)) {
+  // 词长上限分开算：字母 id 可到 16 字（`session-4784`），汉字代号只 2–6 字。
+  // 再滤掉带虚词的——「词里没有青鸟-7」长度合规但不是代号，只是句子的尾巴。
+  const NOISE_RE = /[的了是有把在和与没里这那]/;
+  for (const match of source.matchAll(/(?:[A-Za-z][A-Za-z0-9_]{0,15}|[\u4e00-\u9fa5]{2,6})-[0-9]{1,4}/g)) {
+    if (NOISE_RE.test(match[0])) continue;
     tokens.add(match[0]);
   }
   for (const entity of entitiesOf(source)) tokens.add(entity);
@@ -401,7 +405,7 @@ const PROMISE_RE = /(不要|别再|别忘|记住|以后|约定|答应|下次|永
  * @param {Array} entries
  * @param {{max?:number, chars?:number}} [options]
  */
-export function promiseLines(entries, { max = 4, chars = 36 } = {}) {
+export function promiseLines(entries, { max = 4, chars = 80 } = {}) {
   const seen = new Set();
   const out = [];
   for (const entry of Array.isArray(entries) ? entries : []) {
