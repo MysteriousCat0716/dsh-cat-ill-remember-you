@@ -505,43 +505,45 @@ window.__ModuleLoader__.load({
       ];
 
       const stackEntries = state && Array.isArray(state.stackEntries) ? state.stackEntries : [];
-      const stackRows = stackEntries.map((entry) => {
-        const pick = `${entry.sid}:${entry.seq}`;
-        const selected = pick === stackPick;
-        return h(
-          'div',
-          {
-            key: pick,
-            onClick: () => {
-              setStackPick(pick);
-              setConfirmDelete(false);
-            },
-            style: {
-              padding: '6px 8px',
-              marginBottom: 4,
-              borderRadius: 4,
-              cursor: 'pointer',
-              background: selected ? 'rgba(79,140,255,0.16)' : 'transparent',
-              border: `1px solid ${selected ? accent : 'transparent'}`,
-              fontSize: 12,
-              maxHeight: 120,
-              overflow: 'hidden',
-            },
-          },
-          [
+      // 左栏一次只画选中的那一条：全铺开时条目一多就挤成一片，右边序号才是浏览的地方。
+      const pickedEntry =
+        stackEntries.find((entry) => `${entry.sid}:${entry.seq}` === stackPick) || null;
+      const stackRows = pickedEntry
+        ? [
             h(
               'div',
-              { key: 'm', style: { fontSize: 10, color: text2 } },
-              `${entry.role === 'user' ? '用户' : entry.role === 'assistant' ? '助手' : '工具'} · ${String(entry.sid).slice(-6)} · #${entry.seq}`,
+              {
+                key: 'detail',
+                style: {
+                  padding: '10px 12px',
+                  borderRadius: 6,
+                  border: `1px solid ${line}`,
+                  background: 'rgba(255,255,255,0.02)',
+                  fontSize: 12.5,
+                  lineHeight: 1.65,
+                },
+              },
+              [
+                h(
+                  'div',
+                  { key: 'm', style: { fontSize: 10.5, color: text2, marginBottom: 6 } },
+                  `${pickedEntry.role === 'user' ? '用户' : pickedEntry.role === 'assistant' ? '助手' : '工具'} · ${String(pickedEntry.sid).slice(-6)} · #${pickedEntry.seq}`,
+                ),
+                h(
+                  'div',
+                  { key: 't', style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' } },
+                  pickedEntry.text,
+                ),
+              ],
             ),
+          ]
+        : [
             h(
               'div',
-              { key: 't', style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' } },
-              entry.text,
+              { key: 'empty', style: { color: text2, fontSize: 12, padding: '12px 4px' } },
+              '在右边选一条，这里显示它的原文。',
             ),
-          ],
-        );
-      });
+          ];
       const stackIndex = stackEntries.map((entry) => {
         const pick = `${entry.sid}:${entry.seq}`;
         const selected = pick === stackPick;
