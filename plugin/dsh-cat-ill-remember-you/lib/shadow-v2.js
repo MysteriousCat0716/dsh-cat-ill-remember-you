@@ -611,7 +611,10 @@ export function planShadowV2(
     let keepFrom = lastUserIndex(entries);
     // 一条 user 都没有（比如刚加载）：退回按条数保留。
     if (keepFrom < 0) keepFrom = Math.max(0, entries.length - FULL_KEEP_TAIL);
-    if (keepFrom <= 0) return null;
+    if (keepFrom <= 0) {
+      if (dryRun) log(`preview: full keepFrom=${keepFrom} entries=${entries.length} mode=${mode}`);
+      return null;
+    }
     const keepSeqs = new Set(entries.slice(keepFrom).map((entry) => entry.seq));
     // 区间必须从 surface 第一个节点算起，而不是第一条「没被换过的消息」。
     // 旧替换块在 surface 上是一条 user/message；区间不包住它，每轮都会在
@@ -620,7 +623,10 @@ export function planShadowV2(
     // 区间从节点 1 起算，不能把它包进来。
     const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes.slice(1) : [];
     const cutIndex = nodes.findIndex((seq) => keepSeqs.has(seq));
-    if (cutIndex <= 0) return null;
+    if (cutIndex <= 0) {
+      if (dryRun) log(`preview: full cutIndex=${cutIndex} nodes=${nodes.length} keep=${keepSeqs.size} entries=${entries.length}`);
+      return null;
+    }
     covered = nodes.slice(0, cutIndex);
     rangeStart = covered[0];
     rangeEnd = covered.at(-1);
@@ -638,12 +644,18 @@ export function planShadowV2(
     replaced = originals.length > 0 ? originals : entries.slice(0, keepFrom);
     kept = entries.slice(keepFrom);
   } else if (roll) {
-    if (entries.length <= MIN_ENTRIES) return null;
+    if (entries.length <= MIN_ENTRIES) {
+      if (dryRun) log(`preview: roll entries=${entries.length} mode=${mode} fullRows=${fullRows}`);
+      return null;
+    }
     // 滚动模式：只动最早 STEP 条。保留区按「轮」算而不是按条数——
     // 旧逻辑固定留最近 6 条，7 步以上的超长工具轮会把当前提问换进区间。
     let keepFrom = lastUserIndex(entries);
     if (keepFrom < 0) keepFrom = Math.max(0, entries.length - ROLL_KEEP_TAIL);
-    if (keepFrom <= 0) return null;
+    if (keepFrom <= 0) {
+      if (dryRun) log(`preview: roll keepFrom=${keepFrom} entries=${entries.length} mode=${mode} fullRows=${fullRows}`);
+      return null;
+    }
     const totalChars = entries.reduce((total, entry) => total + entry.text.length, 0);
     const early = entries.slice(0, keepFrom);
     const overCount = early.length > ROLL_STEP;
@@ -658,7 +670,10 @@ export function planShadowV2(
     replaced = split.replaced.slice(-cap);
     kept = split.kept;
   }
-  if (replaced.length === 0) return null;
+  if (replaced.length === 0) {
+    if (dryRun) log(`preview: empty replaced mode=${mode} fullRows=${fullRows} entries=${entries.length}`);
+    return null;
+  }
   const cwd = typeof session?.header?.cwd === 'string' ? session.header.cwd : '';
   rangeStart = rangeStart ?? replaced[0].seq;
   rangeEnd = rangeEnd ?? replaced.at(-1).seq;

@@ -238,7 +238,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.19',
+    version: '0.8.20',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -297,6 +297,7 @@ export function apply(ctx) {
           if (!session) session = ctx.sessions.list().at(-1) ?? null;
           if (!session) throw new Error('还没有会话记录，先发一句话');
           const sid = sidOf(session);
+          log(`preview: session=${sid} nodes=${session?.surface?.nodes?.length ?? 0} last=${Boolean(lastSession)}`);
           // 只推演：不写 surface、不记账、不看冷却，随时可以点。
           // 第三个参数是 options 对象，不是布尔；写成 true 时 dryRun 会是
           // undefined，等于没开推演，白名单外直接返回 null。
