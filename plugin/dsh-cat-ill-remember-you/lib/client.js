@@ -508,11 +508,12 @@ window.__ModuleLoader__.load({
       const sessionNames = new Map(
         ((state && state.sessions) || []).map((item) => [item.sid, String(item.title || '').trim()]),
       );
-      const labelOf = (sid) => {
-        const code = String(sid).slice(-6);
-        const name = sessionNames.get(sid) || '';
-        if (!name) return code;
-        return `${name.length > 14 ? `${name.slice(0, 14)}…` : name} · ${code}`;
+      const labelOf = (entry) => {
+        const code = String(entry.sid).slice(-6);
+        const name = sessionNames.get(entry.sid) || String(entry.title || '').trim();
+        const short = name.length > 14 ? `${name.slice(0, 14)}…` : name;
+        const body = short ? `${short} · ${code}` : code;
+        return entry.archived ? `已归档 · ${body}` : body;
       };
       const stackEntries = state && Array.isArray(state.stackEntries) ? state.stackEntries : [];
       // 左栏一次只画选中的那一条：全铺开时条目一多就挤成一片，右边序号才是浏览的地方。
@@ -534,7 +535,7 @@ window.__ModuleLoader__.load({
                 h(
                   'div',
                   { key: 'm', style: { fontSize: 10.5, color: text2, marginBottom: 6 } },
-                  `${pickedEntry.role === 'user' ? '用户' : pickedEntry.role === 'assistant' ? '助手' : '工具'} · ${pickedEntry.local ? '本会话' : labelOf(pickedEntry.sid)} · #${pickedEntry.seq}`,
+                  `${pickedEntry.role === 'user' ? '用户' : pickedEntry.role === 'assistant' ? '助手' : '工具'} · ${pickedEntry.local ? '本会话' : labelOf(pickedEntry)} · #${pickedEntry.seq}`,
                 ),
                 h(
                   'div',
@@ -573,7 +574,7 @@ window.__ModuleLoader__.load({
               color: text2,
             },
           },
-          entry.local ? `本会话 #${entry.seq}` : `${labelOf(entry.sid)} #${entry.seq}`,
+          entry.local ? `本会话 #${entry.seq}` : `${labelOf(entry)} #${entry.seq}`,
         );
       });
 

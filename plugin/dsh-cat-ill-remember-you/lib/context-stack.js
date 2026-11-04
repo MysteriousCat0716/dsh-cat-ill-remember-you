@@ -455,7 +455,8 @@ export function stackQueryText(db, { limit = 2, chars = 80 } = {}) {
 export function stackSnapshot(db, { sid = '', limit = 50 } = {}) {
   const rows = db
     .prepare(
-      `SELECT s.sid, s.seq, s.t, s.summary, t.role, t.text
+      `SELECT s.sid, s.seq, s.t, s.summary, t.role, t.text,
+              (SELECT text FROM turns WHERE sid = s.sid AND role = 'user' ORDER BY seq LIMIT 1) AS first
        FROM context_stack s
        LEFT JOIN turns t ON t.sid = s.sid AND t.seq = s.seq AND t.origin = 'chat'
        ORDER BY s.t DESC, s.id DESC
@@ -468,6 +469,7 @@ export function stackSnapshot(db, { sid = '', limit = 50 } = {}) {
     t: row.t,
     role: row.role ?? '',
     text: row.text ? clip(plainText(row.text), 400) : String(row.summary ?? ''),
+    title: String(row.first ?? '').replace(/\s+/g, ' ').trim().slice(0, 40),
     local: Boolean(sid) && String(row.sid) === String(sid),
   }));
 }
