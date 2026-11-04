@@ -712,7 +712,7 @@ window.__ModuleLoader__.load({
               style: {
                 flex: '0 0 auto',
                 // 固定宽度：max-content 会跟着最长会话名变，删掉长名会话后整栏缩水
-                width: 300,
+                width: 350,
                 height: 320,
                 overflowY: 'auto',
                 border: `1px solid ${line}`,
