@@ -274,6 +274,17 @@ export function apply(ctx) {
     const current = blacklistLines();
     if (sid && !current.includes(sid)) writeBlacklist([...current, sid]);
   };
+  // 归档会话在核心库里没有标记：DSH 把会话目录从 sessions/ 移到 archive/sessions/。
+  // 右栏是插件自己查库列的，不看宿主的会话列表，所以要单独认一次归档。
+  const ARCHIVE_ROOT = path.join(os.homedir(), '.dsh', 'archive', 'sessions');
+  const isArchived = (sid) => {
+    if (!sid) return false;
+    try {
+      return fs.existsSync(path.join(ARCHIVE_ROOT, String(sid)));
+    } catch {
+      return false;
+    }
+  };
   const sessionList = () => {
     const db = currentStore();
     if (!db) return [];
@@ -285,20 +296,22 @@ export function apply(ctx) {
            FROM turns t WHERE t.origin = 'chat' GROUP BY t.sid HAVING SUM(CASE WHEN t.role = 'user' THEN 1 ELSE 0 END) > 0 ORDER BY last DESC LIMIT 300`,
         )
         .all();
-      return rows.map((row) => ({
-        sid: row.sid,
-        code: String(row.sid).slice(-6),
-        count: row.n,
-        last: row.last,
-        title: String(row.first ?? '').replace(/\s+/g, ' ').slice(0, 40),
-      }));
+      return rows
+        .filter((row) => !isArchived(row.sid))
+        .map((row) => ({
+          sid: row.sid,
+          code: String(row.sid).slice(-6),
+          count: row.n,
+          last: row.last,
+          title: String(row.first ?? '').replace(/\s+/g, ' ').slice(0, 40),
+        }));
     } catch {
       return [];
     }
   };
 
   const panelState = () => ({
-    version: '0.8.28',
+    version: '0.8.29',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
