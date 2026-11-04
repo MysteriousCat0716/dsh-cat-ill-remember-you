@@ -315,7 +315,9 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots'],
+      // connection 要在这里声明：package.json 的 dsh.client.inject 只管模块激活顺序，
+      // 不声明就拿不到 ctx.connection（报 cannot get property "connection" without inject）。
+      inject: ['slots', 'connection'],
       apply(ctx) {
         const call = async (endpoint, input) => {
           const rpc = ctx.connection && ctx.connection.rpc;
