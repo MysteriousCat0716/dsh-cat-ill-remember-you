@@ -113,9 +113,8 @@ export function apply(ctx) {
   };
   // C 层开关：DSH_MEMORY_CORE_ENRICH=off 关掉后台自动整理（提炼 / 向量 / 遗忘），
   // 默认开。只停这个定时器，前台记账与注入不受影响。
-  // 定义必须在这里：startTimer() 在下面（apply 中段）就先调了一次，
-  // 定义在 startTimer 旁边会撞 TDZ（Cannot access 'enrichOn' before initialization）。
-  const enrichOn = envOn('DSH_MEMORY_CORE_ENRICH', true);
+  // 做成函数而不是常量：面板上关掉之后，下一次 tick 就该生效，不必等重启。
+  const enrichOn = () => envOn('DSH_MEMORY_CORE_ENRICH', true);
   const idleMs = envMs('DSH_MEMORY_CORE_IDLE_MS', 5 * 60 * 1000);
   const tickMs = envMs('DSH_MEMORY_CORE_TICK_MS', 60 * 1000);
   const file = process.env.DSH_MEMORY_CORE_DB || undefined;
@@ -210,6 +209,48 @@ export function apply(ctx) {
       ].join(' '),
   );
   startTimer();
+
+  // 面板通道：左栏「记忆」入口点开后，前端经 connection.rpc 读写这里的层开关。
+  // 与 mnemon 的 host 侧同一个机制：connection.rpc.handle(channel, handler)，
+  // handler 返回 { ok, value } 或 { ok: false, error }。没有 connection 的环境
+  // （CLI / 无 webServer 的 profile）直接跳过，插件照常加载。
+  const panelState = () => ({
+    version: '0.8.15',
+    layers: {
+      stack: envOn('DSH_MEMORY_CORE_STACK', true),
+      persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
+      people: envOn('DSH_MEMORY_CORE_PEOPLE', true),
+      recall: envOn('DSH_MEMORY_CORE_RECALL', true),
+      enrich: envOn('DSH_MEMORY_CORE_ENRICH', true),
+    },
+    replace: process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS ? 'env' : 'file',
+  });
+  const LAYER_KEYS = ['STACK', 'PERSONA', 'PEOPLE', 'RECALL', 'ENRICH'];
+  ctx.inject(['connection'], (webContext) => {
+    const connection = webContext.connection;
+    if (!connection?.rpc?.handle) return;
+    connection.rpc.handle('/dsh-cat-memory', async (endpoint, input) => {
+      try {
+        if (endpoint === 'state') return { ok: true, value: panelState() };
+        if (endpoint === 'set') {
+          const key = String(input?.key ?? '');
+          const value = input?.value;
+          if (!LAYER_KEYS.includes(key)) throw new Error(`未知的层：${key}`);
+          if (value !== 'on' && value !== 'off') throw new Error('value 只接受 on / off');
+          process.env[`DSH_MEMORY_CORE_${key}`] = value;
+          log(`panel: ${key}=${value}`);
+          return { ok: true, value: panelState() };
+        }
+        throw new Error(`未知的 endpoint：${endpoint}`);
+      } catch (error) {
+        return {
+          ok: false,
+          error: { code: 'invalid', message: error?.message ?? String(error), details: {} },
+        };
+      }
+    });
+    log('panel rpc: /dsh-cat-memory registered');
+  });
 
   ctx.on('session/event', (session, event) => {
     lastActivity = Date.now();
@@ -460,7 +501,7 @@ export function apply(ctx) {
   // keep the process alive. currentStore() reopens lazily, so the timer must be
   // rebuildable too — otherwise refine/forget silently stop after a cleanup.
   function startTimer() {
-    if (!enrichOn) return;
+    if (!enrichOn()) return;
     if (timer) return;
     timer = setInterval(() => {
     if (refining) return;
