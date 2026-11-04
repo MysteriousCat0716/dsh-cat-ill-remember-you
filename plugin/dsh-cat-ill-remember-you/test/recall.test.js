@@ -334,6 +334,14 @@ test('persona: a preference is not fetched twice by the on-demand layers', async
   db.close();
 });
 
+test('renderHint: 转来的话只给指针，标明原文在 turns', async () => {
+  const text = renderHint([
+    { kind: 'reference', summary: '他转来一段话（原文 1180 字）：copilot回复了', t: Date.UTC(2026, 10, 4) },
+  ]);
+  assert.ok(text.includes('转来的话'));
+  assert.ok(text.includes('原文在 turns'));
+});
+
 test('renderHint: persona and on-demand hits get separate sections', async () => {
   const text = renderHint([
     { kind: 'preference', summary: '不要豆包味', t: Date.UTC(2026, 10, 2), section: 'persona' },

@@ -762,11 +762,21 @@ export function renderHint(hits) {
     lines.push(title);
     list.forEach((hit, index) => {
       const when = hit.t ? new Date(hit.t).toISOString().slice(0, 10) : '';
-      const kind = hit.kind === 'user' ? '原话' : hit.kind === 'assistant' ? '旧回复' : hit.kind;
+      const kind =
+        hit.kind === 'user'
+          ? '原话'
+          : hit.kind === 'assistant'
+            ? '旧回复'
+            : hit.kind === 'reference'
+              ? '转来的话'
+              : hit.kind;
       // 转述/未核实不装成原话：引用它时先留余地。
       const conf =
         hit.confidence === 'reported' ? ' · 转述' : hit.confidence === 'uncertain' ? ' · 未核实' : '';
-      lines.push(`${index + 1}. （${kind}${when ? ` · ${when}` : ''}${conf}）${hit.summary}`);
+      // 转发只给指针：别把别人写的论证当成我们的结论复述出去。
+      const where =
+        hit.kind === 'reference' ? '（原文在 turns，需要时用 session_event_search 取）' : '';
+      lines.push(`${index + 1}. （${kind}${when ? ` · ${when}` : ''}${conf}）${hit.summary}${where}`);
       if (hit.scene) lines.push(`   当时：${hit.scene}`);
     });
   };
