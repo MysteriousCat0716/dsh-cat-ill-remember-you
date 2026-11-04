@@ -78,6 +78,10 @@ function blockText(block) {
     .join('\n');
 }
 
+// 「别 / 不要」只有跟动作时才算决定：「别担心」「不要紧」是安慰，不是决定。
+const DECISION_HINT =
+  /我希望|我想要|我想让|先不做|暂时不|不要删|不要改|不要动|不要再|不要只|不要用|别删|别改|别动|别再|别用|别加|别把/;
+
 /**
  * Rule-based classification of one block.
  * @param {string} userText
@@ -86,7 +90,10 @@ function blockText(block) {
 export function classify(userText, allText) {
   const sample = `${userText} ${allText}`;
   // 决定类强词优先：「以后……不要只靠分片」是决定，不是偏好
-  if (/决定|定了|就这样|采用|选用|还是用|以后|下次|记住|不再|改成|必须|规则|约定/.test(sample)) {
+  if (
+    /决定|定了|就这样|采用|选用|还是用|以后|下次|记住|不再|改成|必须|规则|约定/.test(sample) ||
+    DECISION_HINT.test(sample)
+  ) {
     return 'decision';
   }
   // 「别撑了」「不用算着」是安慰话，不是偏好；偏好只认明确的态度词
@@ -140,7 +147,7 @@ const ATTITUDE =
 function subjectOf(userText, kind) {
   const text = String(userText ?? '');
   if (kind === 'decision' || kind === 'preference') {
-    return ATTITUDE.test(text) ? 'user' : 'assistant';
+    return ATTITUDE.test(text) || DECISION_HINT.test(text) ? 'user' : 'assistant';
   }
   return text ? 'user' : 'assistant';
 }

@@ -75,6 +75,14 @@ test('classify: preference / decision / emotion / fact', () => {
   assert.equal(classify('现在做 M2', '现在做 M2 取回'), 'fact');
 });
 
+test('classify: 别/不要跟动作时算决定，安慰话不算', () => {
+  assert.equal(classify('不要删旧数据', '不要删旧数据'), 'decision');
+  assert.equal(classify('别把注释删了', '别把注释删了'), 'decision');
+  assert.equal(classify('我希望先不做工具层', '我希望先不做工具层'), 'decision');
+  // 「别担心」不跟动作，仍是安慰话
+  assert.equal(classify('别担心', '别担心 我没事'), 'fact');
+});
+
 test('anchorsOf: paths, file names, message refs', () => {
   const anchors = anchorsOf('改 产出/文档/计划.md 与 m00422，见 C:/tmp/x.mjs:12');
   assert.ok(anchors.includes('产出/文档/计划.md'));
