@@ -33,10 +33,9 @@ let vectorCooldownUntil = 0;
 
 // 常驻分区：长期有效的偏好与约定，每轮都在场，不靠抽查到才出现。
 // 上限单独算——它不是「这一轮缺什么」，占的是固定预算。
-const MAX_PERSONA = 8;
-const MAX_PERSONA_CHARS = 300;
-// 哪些 decision 算「约定」：有它才进常驻，普通决定按需取。
-const RELATION = /(以后|不要|别再|记住|规则|约定|答应|下次|永远|边界|原则|偏好|说好)/;
+// 容量跟 persona.js 的注入上限一致：user 4096 / memory 8192 字。
+const MAX_PERSONA_USER = 4096;
+const MAX_PERSONA_MEMORY = 8192;
 
 /**
  * Anchors/entities of the current turn. Only segments that mention a
@@ -203,30 +202,41 @@ function rowToItem(row, source) {
 
 /**
  * 常驻分区：preference 全部 + 带关系词的 decision，active 且来自对话。
- * 预算独立（MAX_PERSONA 条 / MAX_PERSONA_CHARS 字），不参与下面的 2 条挑选。
+ * 预算独立（user 4096 字 / memory 8192 字），不参与下面的 2 条挑选。
  */
 function personaOf(db) {
+  // 从 persona 表取，不从 memories 取。
+  //
+  // memories 里的 decision/preference 是 ingest 从整轮对话切出来的原始问答对
+  // （「问：…｜答：…」、dsh-ui 渲染碎片都在里面），拿它们当常驻判据会让最近
+  // 聊过什么一直压过真正长期有效的那几条。persona 表才是手写/迁移来的干净
+  // 条目，符合「关掉就不再认识他」的定义。
   const rows = db
     .prepare(
-      `SELECT id, kind, summary, text, entities, anchors, t, mentions, confidence, retention FROM memories
-       WHERE tier = 'active' AND origin = 'chat' AND kind IN ('preference', 'decision')
-       ORDER BY t DESC LIMIT 100`,
+      `SELECT id, target, content, importance, t FROM persona
+        ORDER BY CASE importance WHEN 'critical' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END, t DESC`,
     )
     .all();
   const out = [];
-  let chars = 0;
+  let userChars = 0;
+  let memoryChars = 0;
   for (const row of rows) {
-    if (out.length >= MAX_PERSONA) break;
-    const text = `${row.summary ?? ''} ${row.text ?? ''}`;
-    if (row.kind !== 'preference' && !RELATION.test(text)) continue;
-    const summary = String(row.summary ?? '').trim() || String(row.text ?? '').slice(0, 80);
-    if (chars + summary.length > MAX_PERSONA_CHARS) continue;
-    const item = rowToItem(row, 'memory');
-    item.section = 'persona';
-    item.summary = summary;
-    item.why = '长期偏好/约定，每轮都在场。';
-    out.push(item);
-    chars += summary.length;
+    const target = row.target === 'memory' ? 'memory' : 'user';
+    const used = target === 'user' ? userChars : memoryChars;
+    const cap = target === 'user' ? MAX_PERSONA_USER : MAX_PERSONA_MEMORY;
+    const content = String(row.content ?? '').trim();
+    if (!content || used + content.length > cap) continue;
+    out.push({
+      id: `persona:${row.id}`,
+      kind: 'persona',
+      summary: content,
+      section: 'persona',
+      t: row.t,
+      importance: row.importance,
+      target,
+    });
+    if (target === 'user') userChars += content.length;
+    else memoryChars += content.length;
   }
   return out;
 }
@@ -848,7 +858,9 @@ export function renderHint(hits) {
     list.forEach((hit, index) => {
       const when = hit.t ? fmtDate(hit.t) : '';
       const kind =
-        hit.kind === 'user'
+        hit.kind === 'persona'
+          ? '常驻'
+          : hit.kind === 'user'
           ? '原话'
           : hit.kind === 'assistant'
             ? '旧回复'

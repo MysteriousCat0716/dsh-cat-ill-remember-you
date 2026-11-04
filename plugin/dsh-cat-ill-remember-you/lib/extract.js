@@ -446,7 +446,7 @@ function foldPattern(db, id, item) {
   );
 }
 
-function insertMemory(db, item) {
+export function insertMemory(db, item) {
   // 改口和「同一话题重复」要分开：改口必须插新条并挂链，否则新决定
   // 会被并进旧条里，supersedes 永远用不上。
   const supersedes = item.supersedes ?? supersedesFor(db, item);

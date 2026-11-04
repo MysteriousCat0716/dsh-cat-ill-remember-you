@@ -243,30 +243,31 @@ test('retrieve: memories from an IM channel are not injected', async () => {
 
 // —— v0.2.0 分区取回：persona / people / tools ——
 
-test('persona: preferences are injected even when the turn is unrelated', async () => {
+test('persona: 常驻从 persona 表取，与这一轮问什么无关', async () => {
   const db = openStore(':memory:');
   db.prepare(
-    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
-     VALUES ('preference', '猫不喜欢豆包味的通用句', '不要豆包味的通用句', '[]', '[]', '规则提炼：preference', 'active', 1000)`,
+    `INSERT INTO persona (target, content, importance, source, t)
+     VALUES ('user', '猫不喜欢豆包味的通用句', 'critical', 'test', 1000)`,
   ).run();
   const hits = await retrieve(db, { text: '今天天气不错', recent: [] });
-  assert.equal(hits.length, 1);
-  assert.equal(hits[0].section, 'persona');
-  assert.ok(hits[0].summary.includes('豆包'));
+  const persona = hits.filter((hit) => hit.section === 'persona');
+  assert.equal(persona.length, 1);
+  assert.equal(persona[0].summary, '猫不喜欢豆包味的通用句');
+  assert.equal(persona[0].kind, 'persona');
   db.close();
 });
 
-test('persona: total stays within 300 characters', async () => {
+test('persona: 常驻按 user 4096 字容量截断', async () => {
   const db = openStore(':memory:');
   const stmt = db.prepare(
-    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
-     VALUES ('preference', ?, ?, '[]', '[]', '规则提炼：preference', 'active', ?)`,
+    `INSERT INTO persona (target, content, importance, source, t)
+     VALUES ('user', ?, 'normal', 'test', ?)`,
   );
-  for (let i = 0; i < 10; i += 1) stmt.run(`第 ${i} 条偏好`, '偏'.repeat(50), 1000 + i);
+  for (let i = 0; i < 10; i += 1) stmt.run(`${i}` + '偏'.repeat(500), 1000 + i);
   const hits = await retrieve(db, { text: '无关', recent: [] });
   const persona = hits.filter((hit) => hit.section === 'persona');
-  assert.ok(persona.length <= 8);
-  assert.ok(persona.reduce((sum, hit) => sum + hit.summary.length, 0) <= 300);
+  assert.ok(persona.length >= 1);
+  assert.ok(persona.reduce((sum, hit) => sum + hit.summary.length, 0) <= 4096);
   db.close();
 });
 
@@ -321,12 +322,12 @@ test('sections: people and tools each take at most one of the two slots', async 
   db.close();
 });
 
-test('persona: a preference is not fetched twice by the on-demand layers', async () => {
+test('persona: persona 表条目不会在按需层重复出现', async () => {
   const db = openStore(':memory:');
   db.prepare(
-    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
-     VALUES ('preference', '关于 产出/插件/foo.js 的偏好', '关于 foo.js 的偏好', '[]', ?, '规则提炼：preference', 'active', 1000)`,
-  ).run(JSON.stringify(['产出/插件/foo.js']));
+    `INSERT INTO persona (target, content, importance, source, t)
+     VALUES ('user', '关于 foo.js 的偏好', 'normal', 'test', 1000)`,
+  ).run();
   const hits = await retrieve(db, { text: '产出/插件/foo.js 还要改吗', recent: [] });
   const persona = hits.filter((hit) => hit.section === 'persona');
   assert.equal(persona.length, 1);
