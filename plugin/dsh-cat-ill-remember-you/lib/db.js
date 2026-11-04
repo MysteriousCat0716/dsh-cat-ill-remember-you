@@ -170,6 +170,7 @@ CREATE INDEX IF NOT EXISTS idx_persona_target ON persona (target, importance, t)
 
 -- 人物卡：谁是谁。与 memories 分开存——人物是「按名字查得到」，不是「按语义想起来」。
 -- style 只放猫的描述（标「猫说」）；seen=0 表示没直接接触过，不替它编性格。
+-- 不存自己：人物卡是为了记住别人；自己的那条线在「我是谁」里，不在索引里。
 CREATE TABLE IF NOT EXISTS people (
   id       INTEGER PRIMARY KEY AUTOINCREMENT,
   name     TEXT    NOT NULL UNIQUE,
