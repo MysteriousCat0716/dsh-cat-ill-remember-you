@@ -21,10 +21,16 @@ const STICKY_KINDS = new Set(['decision', 'preference']);
 export const EPHEMERAL_DORMANT_MS = 7 * DAY_MS;
 export const EPHEMERAL_COLD_MS = 7 * DAY_MS;
 
-/** Used time: last_used if it was ever fetched, else the moment it was written. */
-function lastTouched(row) {
-  const used = row.last_used ?? 0;
-  return Math.max(Number(used), Number(row.t ?? 0));
+/**
+ * 「真的用上了」才算活着。
+ *
+ * 旧判据是「被取回过」：取回一次 age 就重置，一条从没被用到的记忆可以靠
+ * 反复被取回一直活着。人不是这样——想起来了但没用上，等于没想起来。
+ * 现在只用 recall_log 里 used=1 的最近时间；没有就退回写入时间。
+ */
+function lastEffective(row, usedAt) {
+  const used = usedAt.get(Number(row.id)) ?? 0;
+  return Math.max(used, Number(row.t ?? 0));
 }
 
 /**
@@ -44,6 +50,23 @@ export function forgetSweep(db, opts = {}) {
     )
     .all();
 
+  // 预算一次：哪些记忆真的被用上了，最近一次是什么时候。
+  // 老库没有 recall_log 时退回时间曲线，不让整轮 sweep 抛错。
+  const usedAt = new Map();
+  try {
+    for (const row of db
+      .prepare(
+        `SELECT memory_id, MAX(t) AS last FROM recall_log
+          WHERE used = 1 AND section = 'recall' AND memory_id IS NOT NULL
+          GROUP BY memory_id`,
+      )
+      .all()) {
+      usedAt.set(Number(row.memory_id), Number(row.last) || 0);
+    }
+  } catch {
+    // 没有 recall_log：usedAt 空着，下面自动退回写入时间。
+  }
+
   const markDormant = db.prepare("UPDATE memories SET tier = 'dormant' WHERE id = ?");
   const markCold = db.prepare("UPDATE memories SET tier = 'cold' WHERE id = ?");
   const log = db.prepare(
@@ -61,7 +84,7 @@ export function forgetSweep(db, opts = {}) {
       if (row.retention === 'permanent') continue;
       const ephemeral = row.retention === 'ephemeral';
       if (!ephemeral && STICKY_KINDS.has(row.kind)) continue;
-      const age = now - lastTouched(row);
+      const age = now - lastEffective(row, usedAt);
       const dormantAt = ephemeral ? EPHEMERAL_DORMANT_MS : dormantAfterMs;
       const coldAt = dormantAt + (ephemeral ? EPHEMERAL_COLD_MS : coldAfterMs);
       if (row.tier === TIER_ACTIVE && age >= dormantAt) {

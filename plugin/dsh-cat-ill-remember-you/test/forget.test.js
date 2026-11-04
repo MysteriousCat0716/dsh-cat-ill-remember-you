@@ -61,12 +61,25 @@ test('fresh memory stays active', () => {
   db.close();
 });
 
-test('recently used memory is not demoted even if written long ago', () => {
+test('a memory that was actually used stays active even if written long ago', () => {
+  const db = openStore(':memory:');
+  const now = 200 * DAY_MS;
+  const id = seed(db, { t: now - 100 * DAY_MS });
+  db.prepare(
+    `INSERT INTO recall_log (sid, turn, memory_id, why, used, t, section)
+     VALUES ('s', 1, ?, '', 1, ?, 'recall')`,
+  ).run(id, now - DAY_MS);
+  forgetSweep(db, { now });
+  assert.equal(tierOf(db, id), 'active');
+  db.close();
+});
+
+test('a memory fetched but never used still demotes', () => {
   const db = openStore(':memory:');
   const now = 200 * DAY_MS;
   const id = seed(db, { t: now - 100 * DAY_MS, lastUsed: now - DAY_MS });
   forgetSweep(db, { now });
-  assert.equal(tierOf(db, id), 'active');
+  assert.equal(tierOf(db, id), 'dormant');
   db.close();
 });
 
