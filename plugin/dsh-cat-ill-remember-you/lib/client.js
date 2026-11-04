@@ -515,10 +515,7 @@ window.__ModuleLoader__.load({
               {
                 key: 'detail',
                 style: {
-                  padding: '10px 12px',
-                  borderRadius: 6,
-                  border: `1px solid ${line}`,
-                  background: 'rgba(255,255,255,0.02)',
+                  padding: '8px 10px',
                   fontSize: 12.5,
                   lineHeight: 1.65,
                 },
@@ -637,9 +634,41 @@ window.__ModuleLoader__.load({
             ),
           ],
         ),
-        h('div', { key: 'stack-cols', style: { display: 'flex', gap: 10, marginTop: 10 } }, [
-          h('div', { key: 'left', style: { flex: '2 2 0', minWidth: 0, maxHeight: 320, overflow: 'auto' } }, stackRows),
-          h('div', { key: 'right', style: { flex: '1 1 0', minWidth: 0, maxHeight: 320, overflow: 'auto' } }, stackIndex),
+        h('div', { key: 'stack-cols', style: { display: 'flex', gap: 12, alignItems: 'stretch', marginTop: 10 } }, [
+          h(
+            'div',
+            {
+              key: 'left',
+              style: {
+                flex: '2 2 0',
+                minWidth: 0,
+                height: 320,
+                overflowY: 'auto',
+                border: `1px solid ${line}`,
+                borderRadius: 8,
+                background: bg2,
+                padding: 4,
+              },
+            },
+            stackRows,
+          ),
+          h(
+            'div',
+            {
+              key: 'right',
+              style: {
+                flex: '1 1 0',
+                minWidth: 0,
+                height: 320,
+                overflowY: 'auto',
+                border: `1px solid ${line}`,
+                borderRadius: 8,
+                background: bg2,
+                padding: 4,
+              },
+            },
+            stackIndex,
+          ),
         ]),
         h('div', { key: 'stack-del', style: { marginTop: 10, display: 'flex', gap: 10, alignItems: 'center' } }, [
           h(
