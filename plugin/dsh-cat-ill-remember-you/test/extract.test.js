@@ -83,6 +83,13 @@ test('classify: 别/不要跟动作时算决定，安慰话不算', () => {
   assert.equal(classify('别担心', '别担心 我没事'), 'fact');
 });
 
+test('classify: 愧疚/心疼这类情绪不落到 fact', () => {
+  assert.equal(classify('我给你的个人时间太少了 我有点愧疚的', '不用愧疚。'), 'emotion');
+  assert.equal(classify('看你这样我有点心疼', '我没事。'), 'emotion');
+  // 「害怕/担心」在技术讨论里是判断，不是情绪，别误伤
+  assert.equal(classify('我害怕这个改法会把索引写坏', '那就先备份。'), 'fact');
+});
+
 test('anchorsOf: paths, file names, message refs', () => {
   const anchors = anchorsOf('改 产出/文档/计划.md 与 m00422，见 C:/tmp/x.mjs:12');
   assert.ok(anchors.includes('产出/文档/计划.md'));

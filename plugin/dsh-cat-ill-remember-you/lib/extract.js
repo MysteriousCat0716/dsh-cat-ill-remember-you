@@ -103,7 +103,7 @@ export function classify(userText, allText) {
     return 'decision';
   }
   // 情绪是时间强相关的：单独一类，取回只在情绪/回忆轮次触发，短半衰期
-  if (/累了|难受|难过|玉玉|失眠|焦虑|撑不住|想你|低落|情绪|抑郁/.test(sample)) {
+  if (/累了|难受|难过|玉玉|失眠|焦虑|撑不住|想你|低落|情绪|抑郁|愧疚|孤独|心疼|想哭|好累|很累|不开心|有点烦/.test(sample)) {
     return 'emotion';
   }
   return 'fact';
