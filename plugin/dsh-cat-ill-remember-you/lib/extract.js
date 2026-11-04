@@ -395,6 +395,41 @@ function sameTopicFor(db, item) {
   return null;
 }
 
+function unionList(a, b) {
+  const out = [];
+  for (const value of [...(a ?? []), ...(b ?? [])]) {
+    const s = String(value);
+    if (s && !out.includes(s)) out.push(s);
+  }
+  return out;
+}
+
+/**
+ * 情景压成语义：同一件事说到第三次时，把它从「一条情景」折成「一个模式」。
+ *
+ * 不新建条——新建会让同一件事在召回里出现两次；原地把这条升成模式，
+ * 前几次算进它。注入时读到的是「这件事反复出现」，不是第三次的细节。
+ * 原条不降级：先让两者都在，看回放时用的是哪一条，再决定要不要拆。
+ */
+function foldPattern(db, id, item) {
+  const row = db
+    .prepare('SELECT mentions, summary, text, anchors, entities FROM memories WHERE id = ?')
+    .get(id);
+  if (!row) return;
+  if (String(row.summary ?? '').startsWith('反复出现：')) return;
+  const count = Number(row.mentions) || 0;
+  if (count < 3) return;
+  const anchors = unionList(namesOf(row.anchors), item.anchors);
+  const entities = unionList(namesOf(row.entities), item.entities);
+  db.prepare('UPDATE memories SET summary = ?, text = ?, anchors = ?, entities = ? WHERE id = ?').run(
+    `反复出现：${row.summary}`,
+    `${row.text}\n\n——同一件事已经提过 ${count} 次，这条是第 ${count} 次；前几次算进这里，不再单列。`,
+    JSON.stringify(anchors),
+    JSON.stringify(entities),
+    id,
+  );
+}
+
 function insertMemory(db, item) {
   // 改口和「同一话题重复」要分开：改口必须插新条并挂链，否则新决定
   // 会被并进旧条里，supersedes 永远用不上。
@@ -405,6 +440,7 @@ function insertMemory(db, item) {
       item.t,
       merged,
     );
+    foldPattern(db, merged, item);
     return { id: merged, inserted: false };
   }
   const stmt = db.prepare(

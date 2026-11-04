@@ -388,3 +388,20 @@ test('emotion 不比事实沉得快：retention 走 auto', () => {
   assert.equal(retentionOf('preference'), 'permanent');
   assert.equal(retentionOf('fact'), 'auto');
 });
+
+test('refine: 同一件事说到第三次，折成「反复出现」', () => {
+  const db = openStore(':memory:');
+  const seed = (seq, t, text) => {
+    insertTurn(db, { sid: 's2', seq, role: 'user', text, t });
+    insertTurn(db, { sid: 's2', seq: seq + 1, role: 'assistant', text: '好。', t: t + 1 });
+    refine(db);
+  };
+  seed(1, 1000, '以后 Ollama 只用来算向量，不做生成。');
+  seed(3, 2000, '以后 Ollama 还是只算向量。');
+  seed(5, 3000, '以后 Ollama 还是只算向量，记住了。');
+  const rows = db.prepare('SELECT mentions, summary FROM memories').all();
+  assert.equal(rows.length, 1);
+  assert.equal(Number(rows[0].mentions), 3);
+  assert.equal(rows[0].summary.startsWith('反复出现：'), true);
+  db.close();
+});
