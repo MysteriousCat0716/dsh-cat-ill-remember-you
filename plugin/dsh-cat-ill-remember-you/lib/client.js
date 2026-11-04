@@ -310,23 +310,20 @@ window.__ModuleLoader__.load({
 
       const removeStack = async () => {
         const picks = bulkMode ? bulkPicks : stackPick ? [stackPick] : [];
-        if (!state || picks.length === 0 || busy) return;
-        if (!confirmDelete) {
-          setConfirmDelete(true);
-          return;
-        }
+        if (!state || picks.length === 0) return;
+        if (busy === 'STACK_DELETE') return;
         const items = picks.map((pick) => {
           const at = pick.lastIndexOf(':');
           return { sid: pick.slice(0, at), seq: Number(pick.slice(at + 1)) };
         });
         setBusy('STACK_DELETE');
         setError('');
+        setConfirmDelete(false);
         try {
           await call('stack-delete', { items });
           await load();
           setStackPick('');
           setBulkPicks([]);
-          setConfirmDelete(false);
         } catch (e) {
           setError(String(e && e.message ? e.message : e));
         } finally {
@@ -522,6 +519,7 @@ window.__ModuleLoader__.load({
         return entry.archived ? `已归档 · ${body}` : body;
       };
       const stackEntries = state && Array.isArray(state.stackEntries) ? state.stackEntries : [];
+      const canDelete = bulkMode ? bulkPicks.length > 0 : Boolean(stackPick);
       // 左栏一次只画选中的那一条：全铺开时条目一多就挤成一片，右边序号才是浏览的地方。
       const pickedEntry =
         stackEntries.find((entry) => `${entry.sid}:${entry.seq}` === stackPick) || null;
@@ -728,32 +726,66 @@ window.__ModuleLoader__.load({
           ),
         ]),
         h('div', { key: 'stack-del', style: { marginTop: 10, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' } }, [
-          h(
-            'button',
-            {
-              key: 'del',
-              type: 'button',
-              disabled:
-                busy === 'STACK_DELETE' ||
-                (bulkMode ? bulkPicks.length === 0 : !stackPick),
-              onClick: removeStack,
-              style: {
-                padding: '4px 10px',
-                borderRadius: 6,
-                border: `1px solid ${confirmDelete ? '#e5484d' : (bulkMode ? bulkPicks.length : stackPick) ? accent : line}`,
-                background: 'transparent',
-                color: confirmDelete ? '#e5484d' : (bulkMode ? bulkPicks.length : stackPick) ? accent : text2,
-                fontSize: 12,
-                cursor: (bulkMode ? bulkPicks.length : stackPick) ? 'pointer' : 'default',
-                opacity: (bulkMode ? bulkPicks.length : stackPick) ? 1 : 0.5,
-              },
-            },
-            confirmDelete
-              ? '确认删除？'
-              : bulkMode
-                ? `删掉选中的 ${bulkPicks.length} 条`
-                : '删掉这一条栈',
-          ),
+          confirmDelete && canDelete
+            ? h(
+                'button',
+                {
+                  key: 'ok',
+                  type: 'button',
+                  disabled: busy === 'STACK_DELETE',
+                  onClick: removeStack,
+                  style: {
+                    padding: '4px 10px',
+                    borderRadius: 6,
+                    border: '1px solid #e5484d',
+                    background: 'rgba(229,72,77,0.12)',
+                    color: '#e5484d',
+                    fontSize: 12,
+                    cursor: busy === 'STACK_DELETE' ? 'default' : 'pointer',
+                  },
+                },
+                busy === 'STACK_DELETE' ? '删除中…' : '确认删除',
+              )
+            : h(
+                'button',
+                {
+                  key: 'del',
+                  type: 'button',
+                  disabled: !canDelete || busy === 'STACK_DELETE',
+                  onClick: () => setConfirmDelete(true),
+                  style: {
+                    padding: '4px 10px',
+                    borderRadius: 6,
+                    border: `1px solid ${canDelete ? accent : line}`,
+                    background: 'transparent',
+                    color: canDelete ? accent : text2,
+                    fontSize: 12,
+                    cursor: canDelete ? 'pointer' : 'default',
+                    opacity: canDelete ? 1 : 0.5,
+                  },
+                },
+                bulkMode ? `删掉选中的 ${bulkPicks.length} 条` : '删掉这一条栈',
+              ),
+          confirmDelete && canDelete
+            ? h(
+                'button',
+                {
+                  key: 'cancel',
+                  type: 'button',
+                  onClick: () => setConfirmDelete(false),
+                  style: {
+                    padding: '4px 10px',
+                    borderRadius: 6,
+                    border: `1px solid ${line}`,
+                    background: 'transparent',
+                    color: text2,
+                    fontSize: 12,
+                    cursor: 'pointer',
+                  },
+                },
+                '取消',
+              )
+            : null,
           h(
             'label',
             {
@@ -786,11 +818,13 @@ window.__ModuleLoader__.load({
           h(
             'span',
             { key: 'hint', style: { fontSize: 11, color: text2 } },
-            bulkMode
-              ? '点条目选中，再点一次取消。'
-              : stackPick
-                ? '只影响注入，原文还在库里。'
-                : '先在右边选一条。',
+            confirmDelete && canDelete
+              ? '点「确认删除」才真写盘。'
+              : bulkMode
+                ? '点条目选中，再点一次取消。'
+                : stackPick
+                  ? '只影响注入，原文还在库里。'
+                  : '先在右边选一条。',
           ),
         ]),
       ];
