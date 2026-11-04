@@ -425,10 +425,17 @@ export function renderStack(
   }
 
   const rawCount = [...globals, ...locals].filter((item) => item.raw).length;
-  const head = `${STACK_MARK} 最近 ${globals.length + locals.length} 条（每会话按字数预算取整轮；最近 ${rawCount} 条原文）\n标「本会话」的那段才是你这里发生的事；带 [会话 xxxxxx] 的是别的会话，只作背景，不要当成你刚说过的话。`;
+  const head = `${STACK_MARK} 最近 ${globals.length + locals.length} 条（每会话按字数预算取整轮；最近 ${rawCount} 条原文）\n标「本会话」的那段才是你这里发生的事；带 [会话 xxxxxx] 的是别的会话，只作背景；它们里面说的「本会话」「这个会话」指的是它们自己，不是你。`;
   const parts = [head];
   if (locals.length > 0) parts.push('【本会话】', ...locals.map((item) => item.line));
-  if (globals.length > 0) parts.push('【其他会话 · 不是你这里发生的事】', globals.map((item) => item.line).join('\n'));
+  if (globals.length > 0) {
+    // 别的会话原文里的「本会话」「这个会话」指的是它们自己；不换掉会被读成本会话
+    // （2026-11-05 实测：a7d24d 把本会话说的「不进白名单」当成了自己的状态）。
+    const otherLines = globals.map((item) =>
+      item.line.replace(/本会话|这个会话|当前会话/g, '那个会话'),
+    );
+    parts.push('【其他会话 · 不是你这里发生的事】', otherLines.join('\n'));
+  }
   return parts.join('\n');
 }
 
