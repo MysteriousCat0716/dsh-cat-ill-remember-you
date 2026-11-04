@@ -33,9 +33,11 @@ export const MIN_KEEP = 4;
 export const KEEP_RATIO = 0.4;
 // 少于这个条数不跑：没有可换的内容。
 export const MIN_ENTRIES = 4;
-// 替换文本是缓存不是压缩：600 字上限放开到 1500，变大可以理解。
-// 可用 DSH_MEMORY_CORE_REPLACE_CHARS 调大——大会更完整，也更容易让前缀命中失败。
-export const MAX_REPLACE_CHARS = envInt('DSH_MEMORY_CORE_REPLACE_CHARS', 1500);
+// 替换文本是缓存不是压缩：600 → 1500 → 3000，变大可以理解。
+// 实测 1500 字时 8 万字会话只展开 13 条、助手行 0 条（被 user 行吃光），
+// 决定与理由全丢；先给到 3000，让判断有机会进块。
+// 可用 DSH_MEMORY_CORE_REPLACE_CHARS 覆盖——大会更完整，也更容易让前缀命中失败。
+export const MAX_REPLACE_CHARS = envInt('DSH_MEMORY_CORE_REPLACE_CHARS', 3000);
 // 同一会话两次真替换之间的冷却。每轮都改前缀会让缓存每轮失效。
 export const REPLACE_COOLDOWN_MS = 3 * 60 * 1000;
 
