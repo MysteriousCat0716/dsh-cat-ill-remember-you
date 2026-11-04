@@ -238,7 +238,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.18',
+    version: '0.8.19',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -284,13 +284,19 @@ export function apply(ctx) {
           return { ok: true, value: panelState() };
         }
         if (endpoint === 'preview') {
-          // 重启后模块里还没记过任何会话（lastSession 为空）；退到最近创建的那个，
-          // 免得面板第一次点就先让人发一句话。sid 会显示在日志与面板上，认错能看出来。
-          const session = lastSession ?? ctx.sessions.list().at(-1) ?? null;
-          if (!session) throw new Error('还没有会话记录，先发一句话');
-          const sid = sidOf(session);
+          // 重启后模块里没记过任何会话（lastSession 为空）。会话本身是持久的：
+          // turns 表里每条都带 sid，取最后一条的 sid 就知道「最后说话的是谁」，
+          // 再向宿主要那个活会话对象。最后才退到「最近创建的那个」。
           const db = currentStore();
           if (!db) throw new Error('记忆库没打开');
+          let session = lastSession;
+          if (!session) {
+            const last = db.prepare('SELECT sid FROM turns ORDER BY t DESC LIMIT 1').get();
+            if (last?.sid) session = ctx.sessions.get(last.sid) ?? null;
+          }
+          if (!session) session = ctx.sessions.list().at(-1) ?? null;
+          if (!session) throw new Error('还没有会话记录，先发一句话');
+          const sid = sidOf(session);
           // 只推演：不写 surface、不记账、不看冷却，随时可以点。
           // 第三个参数是 options 对象，不是布尔；写成 true 时 dryRun 会是
           // undefined，等于没开推演，白名单外直接返回 null。
