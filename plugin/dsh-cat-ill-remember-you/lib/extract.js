@@ -105,15 +105,19 @@ export function classify(userText, allText) {
     return 'fact';
   }
   if (PREFERENCE.test(String(userText ?? '')) && !asking) return 'preference';
-  // 决定类强词其次：「以后……不要只靠分片」是决定，不是偏好
+  // 决定类强词只认他自己说的话。
+  // 旧版测 userText+助手回复的拼接：助手回一句「这个决定……」，他一句「我不喜欢这样」
+  // 就被判成 decision（回放集 1026 就是这么变的）。谁的决定看谁的话。
+  const hisWords = String(userText ?? '');
   if (
-    /决定|定了|就这样|采用|选用|还是用|以后|下次|记住|不再|改成|必须|规则|约定/.test(sample) ||
-    DECISION_HINT.test(sample)
+    /决定|定了|就这样|采用|选用|还是用|以后|下次|记住|不再|改成|必须|规则|约定/.test(hisWords) ||
+    DECISION_HINT.test(hisWords) ||
+    /就按|按你说的|听你的|依你|就这个|就它/.test(hisWords)
   ) {
     return 'decision';
   }
-  // 情绪是时间强相关的：单独一类，取回只在情绪/回忆轮次触发，短半衰期
-  if (/累了|难受|难过|玉玉|失眠|焦虑|撑不住|想你|低落|情绪|抑郁|愧疚|孤独|心疼|想哭|好累|很累|不开心|有点烦/.test(sample)) {
+  // 情绪同理：他难受才是情绪；我随口说一句「有点累」不该进库。
+  if (/累了|难受|难过|玉玉|失眠|焦虑|撑不住|想你|低落|情绪|抑郁|愧疚|孤独|心疼|想哭|好累|很累|不开心|有点烦/.test(hisWords)) {
     return 'emotion';
   }
   return 'fact';
