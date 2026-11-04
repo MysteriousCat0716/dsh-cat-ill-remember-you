@@ -368,7 +368,7 @@ export function apply(ctx) {
                 Date.now(),
                 hit.source === 'memory' ? hit.id : null,
                 hit.why ?? '',
-                hit.section === 'persona' ? 'persona' : 'recall',
+                'recall',
               );
             } catch (error) {
               log(`recall log failed: ${error?.message ?? error}`);

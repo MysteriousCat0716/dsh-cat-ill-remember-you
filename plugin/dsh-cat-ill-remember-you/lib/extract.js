@@ -298,8 +298,9 @@ export function candidateOf(block) {
     kind,
     origin: user?.origin ?? 'chat',
     subject,
-    // 转发是原文，截断就指不回去了；其余仍压到 2000 字，底账另有 turns。
-    text: kind === 'reference' ? allText : allText.slice(0, 2000),
+    // 转发给 20k 的独立上限，不是无限：原文靠 source_sid/source_seq 指得回去，
+    // 整段塞进 text 只会让 L2 候选每轮把这行整行拉出来打分。
+    text: allText.slice(0, kind === 'reference' ? 20000 : 2000),
     summary,
     entities: entitiesOf(allText),
     anchors: anchorsOf(allText),
@@ -434,8 +435,10 @@ function foldPattern(db, id, item) {
   if (!row) return;
   const count = Number(row.mentions) || 0;
   if (count < 3) return;
-  const anchors = unionList(namesOf(row.anchors), item.anchors);
-  const entities = unionList(namesOf(row.entities), item.entities);
+  // 并集也设上界，和 entitiesOf/anchorsOf 的 8 个口径一致：
+  // 折十几次后无界增长，打分是线性扫，但注入和比对都会变胖。
+  const anchors = unionList(namesOf(row.anchors), item.anchors).slice(0, 8);
+  const entities = unionList(namesOf(row.entities), item.entities).slice(0, 8);
   db.prepare('UPDATE memories SET anchors = ?, entities = ? WHERE id = ?').run(
     JSON.stringify(anchors),
     JSON.stringify(entities),

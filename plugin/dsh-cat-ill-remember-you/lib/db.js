@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS recall_log (
   score     REAL,
   used      INTEGER,
   -- 'recall' = 这一轮真正检索出来的条目；'persona' = 常驻偏好，每轮由 personaOf
-  -- 重挑，不代表「这次取回用没用上」。分开记，分母才干净。
+  -- 重挑，不代表「这次取回用没用上」。现在是写之前就 continue 了，
+  -- 'persona' 只留给历史数据；留这个值是为了老库还能按它分开统计。
   section   TEXT    NOT NULL DEFAULT 'recall'
 );
 

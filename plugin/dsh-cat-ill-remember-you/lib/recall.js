@@ -345,9 +345,9 @@ function usedBoost(db, id, now = Date.now()) {
   // 单次使用和巧合分不开（回复里出现一个词，不等于这条记忆被用上）：
   // u < 2 不起评，比任何比率形式都便宜。
   if (!hit || hit.n < 2 || hit.u < 2) return 0;
-  const p0 = 0.3; // 先验：全局 used 率大约三成
+  const p0 = USAGE_PRIOR_P; // 先验：全局 used 率大约三成
   // 贝叶斯平滑：小样本被拉回先验，「碰巧一次」天然不动。
-  const posterior = (hit.u + 3 * p0) / (hit.n + 3);
+  const posterior = (hit.u + USAGE_PRIOR_N * p0) / (hit.n + USAGE_PRIOR_N);
   // 上限 0.8：中频锚点命中 2 × (1/ln(2+10)) ≈ 0.8，boost 不该压过它。
   return Math.min(0.8, Math.max(0, (posterior - p0) * 1.2));
 }
