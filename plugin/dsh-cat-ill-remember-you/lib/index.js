@@ -103,6 +103,19 @@ export function apply(ctx) {
     const value = Number(process.env[name]);
     return Number.isFinite(value) && value > 0 ? value : fallback;
   };
+  // 层开关：只认 'on' / 'off'，没设时用各层自己的默认值。
+  // 默认值全部等于开关加进来之前的实际行为——装了不改，行为不变。
+  const envOn = (name, fallback) => {
+    const value = process.env[name];
+    if (value === 'on') return true;
+    if (value === 'off') return false;
+    return fallback;
+  };
+  // C 层开关：DSH_MEMORY_CORE_ENRICH=off 关掉后台自动整理（提炼 / 向量 / 遗忘），
+  // 默认开。只停这个定时器，前台记账与注入不受影响。
+  // 定义必须在这里：startTimer() 在下面（apply 中段）就先调了一次，
+  // 定义在 startTimer 旁边会撞 TDZ（Cannot access 'enrichOn' before initialization）。
+  const enrichOn = envOn('DSH_MEMORY_CORE_ENRICH', true);
   const idleMs = envMs('DSH_MEMORY_CORE_IDLE_MS', 5 * 60 * 1000);
   const tickMs = envMs('DSH_MEMORY_CORE_TICK_MS', 60 * 1000);
   const file = process.env.DSH_MEMORY_CORE_DB || undefined;
@@ -184,6 +197,18 @@ export function apply(ctx) {
     });
     log('self-check: memory context registered');
   });
+  // 启动时把层状态打一行：以后看日志先知道这一版跑的是哪几层。
+  log(
+    'layers ' +
+      [
+        `stack=${envOn('DSH_MEMORY_CORE_STACK', true) ? 'on' : 'off'}`,
+        `persona=${envOn('DSH_MEMORY_CORE_PERSONA', false) ? 'on' : 'off'}`,
+        `people=${envOn('DSH_MEMORY_CORE_PEOPLE', true) ? 'on' : 'off'}`,
+        `recall=${envOn('DSH_MEMORY_CORE_RECALL', true) ? 'on' : 'off'}`,
+        `enrich=${envOn('DSH_MEMORY_CORE_ENRICH', true) ? 'on' : 'off'}`,
+        `replace=${process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS ? 'env' : 'file'}`,
+      ].join(' '),
+  );
   startTimer();
 
   ctx.on('session/event', (session, event) => {
@@ -252,7 +277,10 @@ export function apply(ctx) {
       // 全局栈：跨会话按时间取最近几条，作为接续上下文（指针在栈里，正文现查）。
       // 白名单内直接进替换流程；白名单外也注入，但只作预览——这个会话能看见
       // 「如果被替换会是什么样」，自己的历史不改。
-      try {
+      // A1 层开关：DSH_MEMORY_CORE_STACK=off 关掉（默认开）。
+      // 关掉时检索 query 也不再带栈里的两条——否则测出来是「没注入但照着栈取回」。
+      const stackOn = envOn('DSH_MEMORY_CORE_STACK', true);
+      if (stackOn) try {
         // 当前窗口里已经有的行不要在本会话段重复一遍：用户刚发的那条在
         // pre-step 之前就入栈了，不排掉会在同一个 prompt 里出现两次。
         // 用 seq 而不是轮次号——seq 是宿主真相，跨重启、恢复会话都成立。
@@ -276,7 +304,8 @@ export function apply(ctx) {
 
       // 常驻层：从 mnemon 迁过来的「关掉就不再认识他」那一块。
       // 默认不开，避免和还在跑的 mnemon 每轮双份；DSH_MEMORY_CORE_PERSONA=on 打开。
-      if (process.env.DSH_MEMORY_CORE_PERSONA === 'on') {
+      // A2 层开关：默认关（和还在跑的 mnemon 每轮双份），DSH_MEMORY_CORE_PERSONA=on 打开。
+      if (envOn('DSH_MEMORY_CORE_PERSONA', false)) {
         try {
           const personaText = renderPersona(db);
           if (personaText) {
@@ -296,7 +325,8 @@ export function apply(ctx) {
 
       // 人物卡：按名字精确取，不参与语义检索——名字撞车比语义偏更糟。
       // 放在 baseHint 之后：它依赖这一句提到了谁，不属于跨会话相同的那部分。
-      try {
+      // A3 层开关：DSH_MEMORY_CORE_PEOPLE=off 关掉（默认开）。
+      if (envOn('DSH_MEMORY_CORE_PEOPLE', true)) try {
         const peopleText = renderPeople(db, currentText);
         if (peopleText) {
           hintParts.push(peopleText);
@@ -308,8 +338,12 @@ export function apply(ctx) {
       const recent = currentText
         ? recentTexts(messages).filter((text) => text !== currentText)
         : recentTexts(messages);
-      const query = [stackQueryText(db, { limit: 2 }), currentText].filter(Boolean).join('\n');
-      if (query) {
+      const query = [stackOn ? stackQueryText(db, { limit: 2 }) : '', currentText]
+        .filter(Boolean)
+        .join('\n');
+      // A4 层开关：DSH_MEMORY_CORE_RECALL=off 关掉检索层（默认开）。
+      // 关掉后不取回、不落 recall_trace / recall_log；栈与人物卡不受影响。
+      if (query && envOn('DSH_MEMORY_CORE_RECALL', true)) {
         let hits = await retrieve(db, {
           text: query,
           cwd,
@@ -415,6 +449,7 @@ export function apply(ctx) {
 
   // M1：空闲 5 分钟且有待提炼的轮次时，跑一次规则提炼。
   // 每次只处理最老的 40 条，避免长对话积压时一次卡住事件循环。
+  // 后台自动整理的状态（开关本体在 apply 顶部，startTimer 提前调用不至于 TDZ）。
   let refining = false;
   let embedding = false;
   let embedRetryAt = 0;
@@ -425,6 +460,7 @@ export function apply(ctx) {
   // keep the process alive. currentStore() reopens lazily, so the timer must be
   // rebuildable too — otherwise refine/forget silently stop after a cleanup.
   function startTimer() {
+    if (!enrichOn) return;
     if (timer) return;
     timer = setInterval(() => {
     if (refining) return;

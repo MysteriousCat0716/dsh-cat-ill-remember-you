@@ -78,6 +78,7 @@ async function runPreStep({
   allow = true,
   providerSid = 'new-session',
   stackText = '上次停在：把 stack 接进 pre-step',
+  env = {},
 }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'stack-pre-step-'));
   const file = path.join(dir, 'memory.db');
@@ -110,6 +111,12 @@ async function runPreStep({
   }
   seed.close();
 
+  // 层开关按测试需要临时设，结束恢复——测试文件共用一个进程，不恢复会串。
+  const previousEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    previousEnv[key] = process.env[key];
+    process.env[key] = value;
+  }
   const previous = process.env.DSH_MEMORY_CORE_DB;
   process.env.DSH_MEMORY_CORE_DB = file;
   const allowFile = path.join(dir, 'allow.txt');
@@ -144,7 +151,11 @@ async function runPreStep({
     else process.env.DSH_MEMORY_CORE_DB = previous;
     if (previousAllow === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
     else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousAllow;
-    fs.rmSync(dir, { recursive: true, force: true });
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 }
 
@@ -213,4 +224,29 @@ test('pre-step: 有取回命中时 recall_log 落账（不因 turnNo 漏定义�
   assert.ok(recallCount > 0, 'recall_log 应写入命中记录');
   assert.ok(hintText.includes(STACK_MARK), '栈与取回合并成一条 runtime context');
   assert.ok(hintText.includes('stack 判据：栈存指针、正文现查'));
+});
+
+test('pre-step: DSH_MEMORY_CORE_STACK=off 时全局栈不进注入块', async () => {
+  const { hintText } = await runPreStep({
+    turn: 1,
+    messages: [userMessage('我回来了')],
+    env: { DSH_MEMORY_CORE_STACK: 'off' },
+  });
+  assert.equal(hintText.includes(STACK_MARK), false);
+  assert.equal(hintText.includes('把 stack 接进 pre-step'), false);
+});
+
+test('pre-step: DSH_MEMORY_CORE_RECALL=off 时不再取回、不落 recall_log', async () => {
+  const { hintText, recallCount } = await runPreStep({
+    turn: 1,
+    messages: [userMessage('继续改 lib/context-stack.js 的判据')],
+    memory: {
+      text: 'context-stack.js 的栈只放指针，正文现查',
+      summary: 'stack 判据：栈存指针、正文现查',
+      anchors: ['lib/context-stack.js'],
+    },
+    env: { DSH_MEMORY_CORE_RECALL: 'off' },
+  });
+  assert.equal(recallCount, 0, '关掉检索层后不该再记账');
+  assert.equal(hintText.includes('stack 判据：栈存指针、正文现查'), false);
 });
