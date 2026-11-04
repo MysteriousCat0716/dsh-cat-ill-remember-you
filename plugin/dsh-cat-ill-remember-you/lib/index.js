@@ -279,10 +279,41 @@ export function apply(ctx) {
   const ARCHIVE_ROOT = path.join(os.homedir(), '.dsh', 'archive', 'sessions');
   const isArchived = (sid) => {
     if (!sid) return false;
+    const id = String(sid);
     try {
-      return fs.existsSync(path.join(ARCHIVE_ROOT, String(sid)));
+      return fs.existsSync(path.join(ARCHIVE_ROOT, id.startsWith('session-') ? id : `session-${id}`));
     } catch {
       return false;
+    }
+  };
+  // 右栏要和宿主的会话列表（左栏）一致，而库只知道「哪些会话落过记忆」，
+  // 不知道宿主列了哪些、删了哪些、归档了哪些。宿主的 workspace 存储里每个工作区
+  // 有一份 sessionIds，global.archivedSessionIds 是归档。所以先取宿主列表，
+  // 再按它过滤库里的会话；读不到就退回只按归档目录判断。
+  const WORKSPACE_STORE = path.join(os.homedir(), '.dsh', 'storages', 'workspace.json');
+  let visibleCache = null;
+  let visibleCacheAt = 0;
+  const visibleSids = () => {
+    try {
+      const stat = fs.statSync(WORKSPACE_STORE);
+      if (!visibleCache || stat.mtimeMs !== visibleCacheAt) {
+        const data = JSON.parse(fs.readFileSync(WORKSPACE_STORE, 'utf8'));
+        const archived = new Set(
+          (data?.global?.archivedSessionIds ?? []).map((value) => String(value).replace(/^session-/, '')),
+        );
+        const ids = new Set();
+        for (const workspace of Object.values(data?.tables?.workspaces ?? {})) {
+          for (const sid of workspace?.sessionIds ?? []) {
+            const id = String(sid).replace(/^session-/, '');
+            if (!archived.has(id)) ids.add(id);
+          }
+        }
+        visibleCache = ids;
+        visibleCacheAt = stat.mtimeMs;
+      }
+      return visibleCache;
+    } catch {
+      return null;
     }
   };
   const sessionList = () => {
@@ -296,8 +327,13 @@ export function apply(ctx) {
            FROM turns t WHERE t.origin = 'chat' GROUP BY t.sid HAVING SUM(CASE WHEN t.role = 'user' THEN 1 ELSE 0 END) > 0 ORDER BY last DESC LIMIT 300`,
         )
         .all();
+      const visible = visibleSids();
       return rows
-        .filter((row) => !isArchived(row.sid))
+        .filter((row) => {
+          const id = String(row.sid).replace(/^session-/, '');
+          if (isArchived(id)) return false;
+          return visible === null || visible.has(id);
+        })
         .map((row) => ({
           sid: row.sid,
           code: String(row.sid).slice(-6),
@@ -311,7 +347,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.29',
+    version: '0.8.30',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
