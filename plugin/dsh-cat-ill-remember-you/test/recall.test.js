@@ -536,3 +536,35 @@ test('markRecallUsed: 滑出最近 40 条的旧记录结算为 0，不再永远 
   assert.equal(pending, 40);
   db.close();
 });
+
+test('retrieve: 常被真的用到的记忆，同等命中时排在前面', async () => {
+  const db = openStore(':memory:');
+  const insert = db.prepare(
+    `INSERT INTO memories (kind, text, summary, entities, anchors, why, tier, t)
+     VALUES ('decision', ?, ?, '[]', ?, '规则提炼：decision', 'active', ?)`,
+  );
+  const used = insert.run(
+    'lib/recall.js 的缓存按 mtime 失效。',
+    'recall.js 缓存按 mtime 失效（被用过）',
+    JSON.stringify(['lib/recall.js']),
+    1000,
+  ).lastInsertRowid;
+  insert.run(
+    'lib/recall.js 的缓存按 mtime 失效。',
+    'recall.js 缓存按 mtime 失效（没用过）',
+    JSON.stringify(['lib/recall.js']),
+    2000,
+  );
+  const log = db.prepare(
+    `INSERT INTO recall_log (sid, turn, memory_id, why, used, t) VALUES (?, ?, ?, '', 1, ?)`,
+  );
+  for (let i = 0; i < 3; i += 1) log.run('sid-old', i + 1, used, 3000 + i);
+  const hits = await retrieve(db, {
+    text: 'lib/recall.js 的缓存怎么了',
+    recent: [],
+    now: 4000,
+    sid: 'sid-new',
+  });
+  assert.equal(hits[0].summary.includes('被用过'), true);
+  db.close();
+});

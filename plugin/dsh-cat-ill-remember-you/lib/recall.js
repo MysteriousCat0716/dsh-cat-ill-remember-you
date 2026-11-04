@@ -308,12 +308,47 @@ function weightOf(db, term) {
   weights.set(key, weight);
   return weight;
 }
+// 提取强度：人越常想起来的记忆，越容易被再想起来。
+// 用 recall_log 的 used 率当近似——注入过、而且真的被说出来的比例。
+// 只注入过一两次说明不了什么，所以按样本量降权；上限 1.5 分，
+// 不到一条锚点命中（2×weight）的量级，避免「用过的永远赢」。
+const usageCaches = new WeakMap();
+function usageOf(db) {
+  let cache = usageCaches.get(db);
+  if (cache) return cache;
+  cache = new Map();
+  try {
+    for (const row of db
+      .prepare(
+        `SELECT memory_id, COUNT(*) AS n,
+                SUM(CASE WHEN used = 1 THEN 1 ELSE 0 END) AS u
+           FROM recall_log
+          WHERE section = 'recall' AND memory_id IS NOT NULL
+          GROUP BY memory_id`,
+      )
+      .all()) {
+      cache.set(Number(row.memory_id), { n: Number(row.n) || 0, u: Number(row.u) || 0 });
+    }
+  } catch {
+    // 老库没有 recall_log：不参与打分，不是错误。
+  }
+  usageCaches.set(db, cache);
+  return cache;
+}
+function usedBoost(db, id) {
+  const hit = usageOf(db).get(Number(id));
+  if (!hit || !hit.n) return 0;
+  const confidence = Math.min(1, hit.n / 3);
+  return (hit.u / hit.n) * confidence * 1.5;
+}
 function scoreOf(item, query, db) {
   let score = 0;
   for (const value of item.anchors) if (query.anchors.includes(value)) score += 2 * weightOf(db, value);
   for (const value of item.entities) if (query.entities.includes(value)) score += weightOf(db, value);
   // 「钉子」：显式 permanent 的记忆不靠时间赢，也不该被更近的条目挤掉。
   if (item.retention === 'permanent') score += 2;
+  // 提取强度：越常被真的用出来的记忆，越容易被再取回。
+  score += usedBoost(db, item.id);
   return score;
 }
 
@@ -355,6 +390,8 @@ export async function retrieve(
     vector = process.env.DSH_MEMORY_CORE_VECTOR !== 'off',
   } = {},
 ) {
+  // 每轮重新读一次提取强度；否则同一进程里 used 回填后分数不会变。
+  usageCaches.delete(db);
   const query = queryOf(text);
   // 栈文本也拼进了检索句，但「这一句里有没有指代」要按用户原话判断：
   // 混着栈看，referral 几乎每轮都真，L3 的原文扫描就会每轮都跑。
