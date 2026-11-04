@@ -238,7 +238,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.17',
+    version: '0.8.18',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -284,21 +284,25 @@ export function apply(ctx) {
           return { ok: true, value: panelState() };
         }
         if (endpoint === 'preview') {
-          if (!lastSession) throw new Error('还没有会话记录，先发一句话');
+          // 重启后模块里还没记过任何会话（lastSession 为空）；退到最近创建的那个，
+          // 免得面板第一次点就先让人发一句话。sid 会显示在日志与面板上，认错能看出来。
+          const session = lastSession ?? ctx.sessions.list().at(-1) ?? null;
+          if (!session) throw new Error('还没有会话记录，先发一句话');
+          const sid = sidOf(session);
           const db = currentStore();
           if (!db) throw new Error('记忆库没打开');
           // 只推演：不写 surface、不记账、不看冷却，随时可以点。
           // 第三个参数是 options 对象，不是布尔；写成 true 时 dryRun 会是
           // undefined，等于没开推演，白名单外直接返回 null。
-          const row = planShadowV2(lastSession, db, { dryRun: true });
+          const row = planShadowV2(session, db, { dryRun: true });
           if (!row) throw new Error('这一轮没有可替换的历史（消息太少，或还没到可换的区间）');
           const header =
-            `[${new Date().toISOString()}] sid=${lastSid.slice(-6)} range=${row.rangeStart}-${row.rangeEnd} ` +
+            `[${new Date().toISOString()}] sid=${sid.slice(-6)} range=${row.rangeStart}-${row.rangeEnd} ` +
             `chars=${row.charsBefore}->${row.charsAfter} kept=${row.kept} ` +
             `lost=${Number(row.lostRatio ?? 0).toFixed(3)} dangling=${row.dangling}`;
           fs.mkdirSync(path.dirname(PREVIEW_LOG), { recursive: true });
           fs.appendFileSync(PREVIEW_LOG, `${header}\n${row.text}\n${'-'.repeat(70)}\n`, 'utf8');
-          log(`panel: preview sid=${lastSid} chars=${row.charsAfter}`);
+          log(`panel: preview sid=${sid} chars=${row.charsAfter}`);
           return {
             ok: true,
             value: { path: PREVIEW_LOG, before: row.charsBefore, after: row.charsAfter, text: row.text },
