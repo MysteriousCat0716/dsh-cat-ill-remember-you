@@ -189,7 +189,7 @@ test('candidateOf: 围栏里的 UI 卡片不进摘要', () => {
   });
   assert.ok(!c.summary.includes('dsh-ui'), c.summary);
   assert.ok(!c.summary.includes('{"title"'), c.summary);
-  assert.ok(c.summary.includes('搬法'), c.summary);
+  assert.ok(c.summary.includes('灵魂不该被压缩概括'), c.summary);
 });
 
 test('candidateOf: 用户只说半句、内容主要来自助手时标 reported', () => {
@@ -212,17 +212,16 @@ test('candidateOf: 用户自己说了完整的一句时标 explicit', () => {
   assert.equal(c.confidence, 'explicit');
 });
 
-test('candidateOf: summary says what was asked and what was settled', () => {
+test('candidateOf: summary 取表态方的原话，不拼问答对', () => {
   const c = candidateOf({
     turns: [
       turn({ id: 1, role: 'user', text: 'ok 先验证吧 验证结果：取回一次都没触发，recall_log 还是 0 条。' }),
       turn({ id: 2, role: 'assistant', text: '我查了日志，**根因**是 `turn` 绑成了 NULL，撞上 NOT NULL 约束。' }),
     ],
   });
-  assert.ok(c.summary.startsWith('问：'), c.summary);
+  assert.ok(!c.summary.startsWith('问：'), c.summary);
   assert.ok(!c.summary.startsWith('ok'));
   assert.ok(c.summary.includes('取回一次都没触发'));
-  assert.ok(c.summary.includes('根因'));
   assert.ok(!c.summary.includes('`'));
   assert.ok(!c.summary.includes('**'));
 });

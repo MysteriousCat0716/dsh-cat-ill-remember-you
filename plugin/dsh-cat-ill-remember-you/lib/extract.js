@@ -201,11 +201,16 @@ function withoutFences(text) {
   return String(text ?? '').replace(/```[\s\S]*?(?:```|$)/g, ' ');
 }
 
-function digestOf(userText, botText) {
-  const ask = coreOf(withoutFences(userText), 60);
+function digestOf(userText, botText, subject) {
+  const ask = coreOf(withoutFences(userText), 90);
   const answer = coreOf(withoutFences(botText), 90);
-  if (ask && answer) return `问：${ask}｜答：${answer}`;
-  return ask || answer;
+  // 谁做的判断就取谁的话：他说的决定不必再挂一句我的复述。
+  if (subject === 'assistant') return answer || ask;
+  // 他说的本身就是判断（决定/偏好词），或这句够长、自己说得清，就不再挂复述；
+  // 只是提问（「缓存这块要怎么改？」）才补我的结论。
+  const judged = ATTITUDE.test(ask) || PREFERENCE.test(ask) || DECISION_HINT.test(ask);
+  if (ask && (judged || ask.length >= 30)) return ask;
+  return answer ? (ask ? `${ask}｜${answer}` : answer) : ask;
 }
 
 /** 保留期：preference 是 persona 常驻内容，emotion 是短时效，其余走默认遗忘曲线。 */
@@ -230,7 +235,8 @@ export function candidateOf(block) {
   if (userText.length < 6 && botText.length < 20) return null;
 
   const kind = classify(userText, allText);
-  const summary = digestOf(userText, botText);
+  const subject = subjectOf(userText, kind);
+  const summary = digestOf(userText, botText, subject);
   const scene = head(userText || botText, 50);
   return {
     kind,
