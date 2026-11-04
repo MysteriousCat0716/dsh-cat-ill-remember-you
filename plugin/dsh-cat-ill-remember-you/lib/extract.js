@@ -143,17 +143,22 @@ const ATTITUDE =
 
 /**
  * Who a memory is about: the human or the assistant.
- * 普通事实看来源（有 user 就是 user）；决定和偏好要看表态词在谁嘴里。
+ * 普通事实看来源（有 user 就是 user）；决定和偏好默认也是他——只有我明确表了态
+ * （我的回复里有决定/偏好词），才归到我头上。反过来「他的话没命中词表」不是
+ * 归给我的理由：词表窄是词表的事，不是他说的话不算数。
  * @param {string} userText
+ * @param {string} botText
  * @param {string} kind
  * @returns {'user'|'assistant'}
  */
-function subjectOf(userText, kind) {
+function subjectOf(userText, botText, kind) {
   const text = String(userText ?? '');
+  if (!text) return 'assistant';
   if (kind === 'decision' || kind === 'preference') {
-    return ATTITUDE.test(text) || PREFERENCE.test(text) || DECISION_HINT.test(text) ? 'user' : 'assistant';
+    if (ATTITUDE.test(text) || PREFERENCE.test(text) || DECISION_HINT.test(text)) return 'user';
+    return ATTITUDE.test(String(botText ?? '')) ? 'assistant' : 'user';
   }
-  return text ? 'user' : 'assistant';
+  return 'user';
 }
 
 /**
@@ -235,13 +240,13 @@ export function candidateOf(block) {
   if (userText.length < 6 && botText.length < 20) return null;
 
   const kind = classify(userText, allText);
-  const subject = subjectOf(userText, kind);
+  const subject = subjectOf(userText, botText, kind);
   const summary = digestOf(userText, botText, subject);
   const scene = head(userText || botText, 50);
   return {
     kind,
     origin: user?.origin ?? 'chat',
-    subject: subjectOf(userText, kind),
+    subject,
     text: allText.slice(0, 2000),
     summary,
     entities: entitiesOf(allText),
