@@ -50,70 +50,59 @@ function textEntries(prefix, count) {
   return entries;
 }
 
-/** 临时白名单文件：只有列出的会话才允许真替换。 */
-function tempSessionList(sids) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'replace-sessions-'));
-  const file = path.join(dir, 'list.txt');
-  fs.writeFileSync(file, `${sids.join('\n')}\n`, 'utf8');
-  return { file, cleanup: () => fs.rmSync(dir, { recursive: true, force: true }) };
-}
-
-/** 临时打开白名单；返回清理函数。 */
-function useWhitelist(sids) {
-  const previous = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  const list = tempSessionList(sids);
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+/** 临时打开/关掉全局替换开关；返回清理函数。黑名单给空文件，避免读到真实缓存。 */
+function useGlobalReplace(on = true) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'replace-mode-'));
+  const modeFile = path.join(dir, 'mode.txt');
+  const blackFile = path.join(dir, 'black.txt');
+  fs.writeFileSync(modeFile, on ? 'on\n' : 'off\n', 'utf8');
+  fs.writeFileSync(blackFile, '', 'utf8');
+  const previousMode = process.env.DSH_MEMORY_CORE_REPLACE_MODE_FILE;
+  const previousBlack = process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE;
+  process.env.DSH_MEMORY_CORE_REPLACE_MODE_FILE = modeFile;
+  process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE = blackFile;
   return () => {
-    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previous;
-    list.cleanup();
+    if (previousMode === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_MODE_FILE;
+    else process.env.DSH_MEMORY_CORE_REPLACE_MODE_FILE = previousMode;
+    if (previousBlack === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE;
+    else process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE = previousBlack;
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   };
 }
 
 // 缓存按 mtime+size 失效：文件改写后必须立刻读到新内容。
-test('replaceMode: 白名单文件改写后立即生效（缓存按 mtime+size 失效）', () => {
-  const list = tempSessionList(['sid-a']);
-  const previous = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+test('replaceMode: 开关文件改写后立即生效（缓存按 mtime+size 失效）', () => {
+  const restore = useGlobalReplace(true);
   try {
-    assert.equal(replaceMode('sid-a'), 'roll');
-    assert.equal(replaceMode('sid-b'), 'off');
+    const modeFile = process.env.DSH_MEMORY_CORE_REPLACE_MODE_FILE;
+    assert.equal(replaceMode('sid-a'), 'full');
     // 同一路径重写：内容变长，size 和 mtime 都会变，缓存必须跟着失效。
-    fs.writeFileSync(list.file, 'sid-a\nsid-b:full\n', 'utf8');
-    assert.equal(replaceMode('sid-b'), 'full');
-    assert.equal(replaceMode('sid-c'), 'off');
+    fs.writeFileSync(modeFile, 'off\n', 'utf8');
+    assert.equal(replaceMode('sid-a'), 'off');
   } finally {
-    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previous;
-    list.cleanup();
+    restore();
   }
 });
 
-/**
- * 记账与替换都只发生在白名单内的会话；测试默认把所有用到的 sid 放进白名单。
- * 需要验证「白名单外」的测试自己再调 useWhitelist 覆盖。
- */
-let restoreDefaultWhitelist = null;
+test('replaceMode: 黑名单压过全局开关', () => {
+  const restore = useGlobalReplace(true);
+  try {
+    fs.writeFileSync(process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE, 'sid-blocked\n', 'utf8');
+    assert.equal(replaceMode('sid-blocked'), 'off');
+    assert.equal(replaceMode('sid-other'), 'full');
+  } finally {
+    restore();
+  }
+});
+
+/** 记账与替换都只发生在开关打开时；测试默认把全局开关打开。 */
+let restoreDefaultReplace = null;
 beforeEach(() => {
-  restoreDefaultWhitelist = useWhitelist([
-    'sid-test',
-    'sid-abc',
-    'sid-w',
-    'sid-roll',
-    'sid-roll-long',
-    'sid-chars',
-    'sid-env',
-    'sid-env-bad',
-    'sid-no-replace',
-    'sid-dedupe',
-    'sid-retry',
-    'sid-apply',
-    'sid-gap',
-  ]);
+  restoreDefaultReplace = useGlobalReplace(true);
 });
 afterEach(() => {
-  restoreDefaultWhitelist?.();
-  restoreDefaultWhitelist = null;
+  restoreDefaultReplace?.();
+  restoreDefaultReplace = null;
 });
 
 /** 真替换推在微任务里做，断言前等它落地。 */
@@ -176,10 +165,13 @@ test('planShadowV2: 消息少于 4 条时不记账', () => {
   db.close();
 });
 
-test('planShadowV2: 6 条短会话不换（最近 6 条是保护线）', () => {
+test('planShadowV2: 6 条短会话按 full 换掉当前轮之前的 4 条', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('短句', 6));
-  assert.equal(planShadowV2(session, db, { now: 1 }), null);
+  const plan = planShadowV2(session, db, { now: 1 });
+  assert.ok(plan);
+  assert.equal(plan.rangeEnd, 4);
+  assert.equal(plan.kept, 2);
   db.close();
 });
 
@@ -189,8 +181,9 @@ test('planShadowV2: 写一行 shadow_v2，字段对得上', () => {
   const plan = planShadowV2(session, db, { keep: 10, now: 1234 });
   assert.ok(plan);
   assert.equal(plan.rangeStart, 1);
-  assert.equal(plan.rangeEnd, 4);
-  assert.equal(plan.kept, 10);
+  // full 只留当前轮：14 条里最后两条是当前一问一答。
+  assert.equal(plan.rangeEnd, 12);
+  assert.equal(plan.kept, 2);
   assert.equal(plan.charsAfter, plan.text.length);
   const row = db.prepare('SELECT * FROM shadow_v2').get();
   assert.equal(row.sid, 'sid-abc');
@@ -216,26 +209,14 @@ test('surfaceMessages: 跳过运行时注入与工具消息', () => {
   );
 });
 
-test('planShadowV2: 只取最近 window 条老消息（旧模式兜底）', () => {
-  const db = openStore(':memory:');
-  const session = fakeSession(textEntries('消息', 80), 'sid-w');
-  const plan = planShadowV2(session, db, { keep: 10, window: 20, now: 1, roll: false });
-  assert.ok(plan);
-  assert.equal(plan.rangeStart, 51);
-  assert.equal(plan.rangeEnd, 70);
-  assert.equal(plan.kept, 10);
-  db.close();
-});
-
-test('planShadowV2: 滚动模式只换最早 4 条，最近 6 条原文不动', () => {
+test('planShadowV2: window/roll 旧参数不再生效，full 一律换当前轮之前的全部', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 12), 'sid-roll');
-  const plan = planShadowV2(session, db, { now: 1 });
+  const plan = planShadowV2(session, db, { keep: 10, window: 20, now: 1, roll: false });
   assert.ok(plan);
   assert.equal(plan.rangeStart, 1);
-  assert.equal(plan.rangeEnd, 4);
-  // 未换的早段 6 条 + 最后一轮 2 条（保留区按轮算）
-  assert.equal(plan.kept, 8);
+  assert.equal(plan.rangeEnd, 10);
+  assert.equal(plan.kept, 2);
   db.close();
 });
 
@@ -260,7 +241,7 @@ test('planShadowV2: 滚动模式按轮保留，超长工具轮不改当前提问
 test('planShadowV2: 白名单 sid:full 不等门槛，除最近 2 条外全部进替换', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 12), 'sid-full');
-  const restore = useWhitelist(['sid-full:full']);
+  const restore = (() => {});
   try {
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan);
@@ -273,19 +254,12 @@ test('planShadowV2: 白名单 sid:full 不等门槛，除最近 2 条外全部�
   }
 });
 
-test('planShadowV2: sid:full 会话只有 3 条时也换（不等 11 条门槛）', () => {
+test('planShadowV2: 少于 4 条时不换（太短，换不出东西）', () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 3), 'sid-full-small');
-  const restore = useWhitelist(['sid-full-small:full']);
   try {
-    const plan = planShadowV2(session, db, { now: 1 });
-    assert.ok(plan);
-    assert.equal(plan.rangeStart, 1);
-    // 保留区按轮：最后一条是 user（seq 3），前面的 user+assistant 都进区间。
-    assert.equal(plan.rangeEnd, 2);
-    assert.equal(plan.kept, 1);
+    assert.equal(planShadowV2(session, db, { now: 1 }), null);
   } finally {
-    restore();
     db.close();
   }
 });
@@ -313,7 +287,7 @@ test('planShadowV2: full 第二轮把旧替换块包进区间，原文从 turns 
       seq,
     );
   }
-  const restore = useWhitelist(['sid-full-2:full']);
+  const restore = (() => {});
   try {
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan);
@@ -335,7 +309,7 @@ test('planShadowV2: full 模式不把节点 0 的 system prompt 包进区间', (
   const session = fakeSession(entries, 'sid-sys-0');
   // 真实宿主里节点 0 是 system prompt，有自己的 seq，不是占位 0。
   session.surface.nodes = [1, ...entries.map(([seq]) => seq)];
-  const restore = useWhitelist(['sid-sys-0:full']);
+  const restore = (() => {});
   try {
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan);
@@ -351,7 +325,7 @@ test('planShadowV2: full 模式不把节点 0 的 system prompt 包进区间', (
 test('planShadowV2: full 模式按保留区过滤原文，不依赖 seq 单调', () => {
   const db = openStore(':memory:');
   const entries = [
-    [587, 'user', '[上下文替换｜旧消息压缩，非用户发言] 更早 5 条（seq 1-5），原文在本地：…'],
+    [587, 'user', '用户在 587 说的话'],
     [571, 'assistant', '助手在 571 说的话'],
     [579, 'user', '用户在 579 说的话'],
     [605, 'assistant', '助手在 605 说的话'],
@@ -363,7 +337,7 @@ test('planShadowV2: full 模式按保留区过滤原文，不依赖 seq 单调',
   insert.run('sid-nonmono', 571, 'assistant', 'chat', '/w', '助手在 571 说的话', 571);
   insert.run('sid-nonmono', 579, 'user', 'chat', '/w', '用户在 579 说的话', 579);
   insert.run('sid-nonmono', 605, 'assistant', 'chat', '/w', '助手在 605 说的话', 605);
-  const restore = useWhitelist(['sid-nonmono:full']);
+  const restore = (() => {});
   try {
     const plan = planShadowV2(session, db, { now: 1 });
     assert.ok(plan);
@@ -388,48 +362,15 @@ test('planShadowV2: 字数超预算时条数不够也换（只换得动最早那
   const plan = planShadowV2(session, db, { now: 1 });
   assert.ok(plan);
   assert.equal(plan.rangeStart, 1);
-  // 保留区按轮算（最后一轮 2 条 + STEP 之后未换的 2 条），仍只动最早 4 条。
-  assert.equal(plan.rangeEnd, 4);
-  assert.equal(plan.kept, 4);
+  // full 只留当前轮：8 条里最后两条不动。
+  assert.equal(plan.rangeEnd, 6);
+  assert.equal(plan.kept, 2);
   db.close();
-});
-
-test('planShadowV2: keep 可由 DSH_MEMORY_CORE_KEEP 覆盖（旧模式兜底）', () => {
-  const db = openStore(':memory:');
-  const session = fakeSession(textEntries('消息', 20), 'sid-env');
-  const previous = process.env.DSH_MEMORY_CORE_KEEP;
-  process.env.DSH_MEMORY_CORE_KEEP = '5';
-  try {
-    const plan = planShadowV2(session, db, { now: 1, roll: false });
-    assert.ok(plan);
-    assert.equal(plan.kept, 5);
-  } finally {
-    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_KEEP;
-    else process.env.DSH_MEMORY_CORE_KEEP = previous;
-    db.close();
-  }
-});
-
-test('planShadowV2: 环境变量非法时回落到动态 keep（旧模式兜底）', () => {
-  const db = openStore(':memory:');
-  const session = fakeSession(textEntries('消息', 20), 'sid-env-bad');
-  const previous = process.env.DSH_MEMORY_CORE_KEEP;
-  process.env.DSH_MEMORY_CORE_KEEP = 'nope';
-  try {
-    const plan = planShadowV2(session, db, { now: 1, roll: false });
-    assert.ok(plan);
-    // 20 条 × 0.4 = 8，落在 [MIN_KEEP, DEFAULT_KEEP] 之间
-    assert.equal(plan.kept, 8);
-  } finally {
-    if (previous === undefined) delete process.env.DSH_MEMORY_CORE_KEEP;
-    else process.env.DSH_MEMORY_CORE_KEEP = previous;
-    db.close();
-  }
 });
 
 test('planShadowV2: 白名单外默认什么都不做', async () => {
   const db = openStore(':memory:');
-  const cleanup = useWhitelist([]); // 空名单 = 全关
+  const cleanup = useGlobalReplace(false); // 关掉全局开关 = 什么都不做
   const session = fakeSession(textEntries('消息', 14), 'sid-no-replace');
   try {
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
@@ -455,9 +396,9 @@ test('planShadowV2: REPLACE=1 且会话在白名单时写 surfaceOp.replace', as
   const session = fakeSession(longEntries, 'sid-replace');
   const previous = process.env.DSH_MEMORY_CORE_REPLACE;
   const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  const list = tempSessionList(['sid-replace']);
+  const list = { file: '', cleanup: () => {} }; // 旧白名单已废弃
   process.env.DSH_MEMORY_CORE_REPLACE = '1';
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  // 旧白名单已废弃：不再设置
   try {
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
     assert.ok(plan);
@@ -495,9 +436,9 @@ test('planShadowV2: 替换文本变大也真换（它是缓存不是压缩）', 
   const session = fakeSession(textEntries('消息', 14), 'sid-replace');
   const previous = process.env.DSH_MEMORY_CORE_REPLACE;
   const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  const list = tempSessionList(['sid-replace']);
+  const list = { file: '', cleanup: () => {} }; // 旧白名单已废弃
   process.env.DSH_MEMORY_CORE_REPLACE = '1';
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  // 旧白名单已废弃：不再设置
   try {
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
     assert.ok(plan);
@@ -515,13 +456,13 @@ test('planShadowV2: 替换文本变大也真换（它是缓存不是压缩）', 
   }
 });
 
-test('planShadowV2: 会话不在白名单时什么都不做', async () => {
+test('planShadowV2: 黑名单里的会话什么都不做', async () => {
   const db = openStore(':memory:');
-  const session = fakeSession(textEntries('消息', 14), 'sid-other');
-  const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  const list = tempSessionList(['sid-replace']);
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  const session = fakeSession(textEntries('消息', 14), 'sid-black');
+  const restore = useGlobalReplace(true);
+  const blackFile = process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE;
   try {
+    fs.writeFileSync(blackFile, 'sid-black\n');
     const plan = planShadowV2(session, db, { keep: 10, now: 1 });
     assert.equal(plan, null);
     await tick();
@@ -529,9 +470,7 @@ test('planShadowV2: 会话不在白名单时什么都不做', async () => {
     const count = db.prepare('SELECT COUNT(*) AS n FROM shadow_v2').get().n;
     assert.equal(Number(count), 0);
   } finally {
-    if (previousList === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
-    list.cleanup();
+    restore();
     db.close();
   }
 });
@@ -540,8 +479,8 @@ test('planShadowV2: maxSeq 把后面的轮次当作还没发生', async () => {
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 20), 'sid-cut');
   const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  const list = tempSessionList(['sid-cut']);
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  const list = { file: '', cleanup: () => {} }; // 旧白名单已废弃
+  // 旧白名单已废弃：不再设置
   try {
     const full = planShadowV2(session, db, { keep: 10, now: 1, dryRun: true });
     const cut = planShadowV2(session, db, { keep: 10, now: 1, dryRun: true, maxSeq: 12 });
@@ -560,8 +499,8 @@ test('planShadowV2: dryRun 在白名单外也出推演（预览不该被开关�
   const db = openStore(':memory:');
   const session = fakeSession(textEntries('消息', 14), 'sid-other');
   const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  const list = tempSessionList(['sid-replace']);
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  const list = { file: '', cleanup: () => {} }; // 旧白名单已废弃
+  // 旧白名单已废弃：不再设置
   try {
     const plan = planShadowV2(session, db, { keep: 10, now: 1, dryRun: true });
     assert.ok(plan, '白名单外 dryRun 也要算出一份计划，否则面板的预览按钮永远没东西');
@@ -618,9 +557,9 @@ test('planShadowV2: 同一区间换成功后不再重复记账', async () => {
 });
 
 test('applyReplacement: 位置区间里夹着早先替换块时，按位置取 seqs 而不是按值', () => {
-  const list = tempSessionList(['sid-gap']);
+  const list = { file: '', cleanup: () => {} }; // 旧白名单已废弃
   const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  // 旧白名单已废弃：不再设置
   const appended = [];
   // 真实形状：旧的替换块 seq=313 位置在 100 和 101 之间，值却比当前区间尾部大。
   const session = {
@@ -656,9 +595,9 @@ test('planShadowV2: 白名单内 apply 失败后同区间下一轮会重试，�
     if (calls === 1) throw new Error('boom');
     return realAppend(...args);
   };
-  const list = tempSessionList(['sid-retry']);
+  const list = { file: '', cleanup: () => {} }; // 旧白名单已废弃
   const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  // 旧白名单已废弃：不再设置
   try {
     const first = planShadowV2(session, db, { keep: 10, now: 1 });
     assert.ok(first);
@@ -699,9 +638,9 @@ test('applyReplacement: 区间终点不切在 assistant 与它的 tool/call 之�
       appended.push({ type, data, options });
     },
   };
-  const list = tempSessionList(['sid-tool-cut']);
+  const list = { file: '', cleanup: () => {} }; // 旧白名单已废弃
   const previousList = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = list.file;
+  // 旧白名单已废弃：不再设置
   try {
     const ok = applyReplacement(
       session,
@@ -773,7 +712,7 @@ test('planShadowV2: full 模式压掉工具结果时，替换文本留一行索�
         : undefined,
     append: () => ({ seq: 999 }),
   };
-  const cleanup = useWhitelist(['sid-tool:full']);
+  const cleanup = (() => {});
   const db = openStore(':memory:');
   try {
     const plan = planShadowV2(session, db, { now: 1 });
@@ -822,7 +761,7 @@ test('planShadowV2: 工具结果在 spill 上时，索引写目录而不是 seq'
         : undefined,
     append: () => ({ seq: 999 }),
   };
-  const cleanup = useWhitelist(['sid-tool-spill:full']);
+  const cleanup = (() => {});
   const db = openStore(':memory:');
   try {
     const plan = planShadowV2(session, db, { now: 1 });

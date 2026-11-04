@@ -9,7 +9,16 @@ import { ingestEvent, setIngestLogger, textOf } from './ingest.js';
 import { sidOf } from './sid.js';
 import { retrieve, renderHint, markRecallUsed } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
-import { planShadowV2, replaceMode, setShadowLogger } from './shadow-v2.js';
+import {
+  planShadowV2,
+  replaceMode,
+  setShadowLogger,
+  blacklistLines,
+  autoBlacklistFile,
+  REPLACE_MODE_FILE,
+  REPLACE_BLACKLIST_FILE,
+  AUTO_BLACKLIST_FILE,
+} from './shadow-v2.js';
 import { backfillStack, renderStack, stackQueryText } from './context-stack.js';
 import { renderPersona } from './persona.js';
 import { renderPeople } from './people.js';
@@ -100,6 +109,8 @@ export function apply(ctx) {
   // 多窗口同时说话时跟最后那个，面板上显示它的后 6 位，不假装是精确的。
   let lastSid = '';
   let lastSession = null;
+  // 「新会话自动进黑名单」用：见过就不必再查库。
+  const seenSessions = new Set();
   // Set by the effect cleanup. An in-flight pre-step may still be awaiting
   // next() when the host disposes this scope; without this flag currentStore()
   // would happily reopen the db and write after unload.
@@ -119,6 +130,22 @@ export function apply(ctx) {
     if (value === 'on') return true;
     if (value === 'off') return false;
     return fallback;
+  };
+  // 全局替换开关也必须是函数：下面第 218 行的 layers 日志就要用它，
+  // 而 REPLACE_MODE_FILE 常量和这段代码在同一个作用域里，写成 const 会撞 TDZ。
+  const replaceSwitchOn = () => {
+    try {
+      return fs.readFileSync(REPLACE_MODE_FILE, 'utf8').trim() === 'on';
+    } catch {
+      return false;
+    }
+  };
+  const readAutoBlacklist = () => {
+    try {
+      return fs.readFileSync(AUTO_BLACKLIST_FILE, 'utf8').trim() === 'on';
+    } catch {
+      return false;
+    }
   };
   // C 层开关：DSH_MEMORY_CORE_ENRICH=off 关掉后台自动整理（提炼 / 向量 / 遗忘），
   // 默认开。只停这个定时器，前台记账与注入不受影响。
@@ -214,7 +241,8 @@ export function apply(ctx) {
         `people=${envOn('DSH_MEMORY_CORE_PEOPLE', true) ? 'on' : 'off'}`,
         `recall=${envOn('DSH_MEMORY_CORE_RECALL', true) ? 'on' : 'off'}`,
         `enrich=${envOn('DSH_MEMORY_CORE_ENRICH', true) ? 'on' : 'off'}`,
-        `replace=${process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS ? 'env' : 'file'}`,
+        `replace=${replaceSwitchOn() ? 'on' : 'off'}`,
+        `autoBlacklist=${readAutoBlacklist() ? 'on' : 'off'}`,
       ].join(' '),
   );
   startTimer();
@@ -223,27 +251,54 @@ export function apply(ctx) {
   // 与 mnemon 的 host 侧同一个机制：connection.rpc.handle(channel, handler)，
   // handler 返回 { ok, value } 或 { ok: false, error }。没有 connection 的环境
   // （CLI / 无 webServer 的 profile）直接跳过，插件照常加载。
-  // 替换白名单与预览日志都是磁盘文件：面板只做读写，不另存一份状态。
-  const REPLACE_FILE = path.join(os.homedir(), '.dsh', 'cache', 'replace-sessions.txt');
+  // 替换上下文预览日志是磁盘文件：面板只做读写，不另存一份状态。
   const CONTEXT_LOG = path.join(os.homedir(), '.dsh', 'cache', 'context-preview.log');
-  const readWhitelist = () => {
+
+  const readSmall = (file) => {
     try {
-      return fs
-        .readFileSync(REPLACE_FILE, 'utf8')
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean);
+      return fs.readFileSync(file, 'utf8').trim();
+    } catch {
+      return '';
+    }
+  };
+  const writeSmall = (file, text) => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, text, 'utf8');
+  };
+  // 全局开关、黑名单、自动黑名单都是磁盘文件：面板只读写，不在内存另存一份状态。
+  const readGlobalReplace = () => readSmall(REPLACE_MODE_FILE) === 'on';
+  const writeBlacklist = (lines) => {
+    writeSmall(REPLACE_BLACKLIST_FILE, lines.length ? `${lines.join('\n')}\n` : '');
+  };
+  const addToBlacklist = (sid) => {
+    const current = blacklistLines();
+    if (sid && !current.includes(sid)) writeBlacklist([...current, sid]);
+  };
+  const sessionList = () => {
+    const db = currentStore();
+    if (!db) return [];
+    try {
+      const rows = db
+        .prepare(
+          `SELECT t.sid AS sid, MAX(t.t) AS last, COUNT(*) AS n,
+             (SELECT text FROM turns WHERE sid = t.sid AND role = 'user' ORDER BY seq LIMIT 1) AS first
+           FROM turns t WHERE t.origin = 'chat' GROUP BY t.sid ORDER BY last DESC LIMIT 300`,
+        )
+        .all();
+      return rows.map((row) => ({
+        sid: row.sid,
+        code: String(row.sid).slice(-6),
+        count: row.n,
+        last: row.last,
+        title: String(row.first ?? '').replace(/\s+/g, ' ').slice(0, 40),
+      }));
     } catch {
       return [];
     }
   };
-  const writeWhitelist = (lines) => {
-    fs.mkdirSync(path.dirname(REPLACE_FILE), { recursive: true });
-    fs.writeFileSync(REPLACE_FILE, lines.length ? `${lines.join('\n')}\n` : '', 'utf8');
-  };
 
   const panelState = () => ({
-    version: '0.8.25',
+    version: '0.8.27',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -251,10 +306,10 @@ export function apply(ctx) {
       recall: envOn('DSH_MEMORY_CORE_RECALL', true),
       enrich: envOn('DSH_MEMORY_CORE_ENRICH', true),
     },
-    replace: process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS ? 'env' : 'file',
-    // 「替换开关」跟着最后说话的那个会话走。
-    replaceOn: lastSid ? replaceMode(lastSid) !== 'off' : false,
-    replaceSid: lastSid ? lastSid.slice(-6) : '',
+    replaceGlobal: readGlobalReplace(),
+    autoBlacklist: readAutoBlacklist(),
+    blacklist: blacklistLines(),
+    sessions: sessionList(),
     contextLog: CONTEXT_LOG,
   });
   const LAYER_KEYS = ['STACK', 'PERSONA', 'PEOPLE', 'RECALL', 'ENRICH'];
@@ -271,21 +326,32 @@ export function apply(ctx) {
           const key = String(input?.key ?? '');
           const value = input?.value;
           if (value !== 'on' && value !== 'off') throw new Error('value 只接受 on / off');
+          // 通常设置：全局替换开关与「新会话自动拉黑」，都落在磁盘上，重启不丢。
           if (key === 'REPLACE') {
-            if (process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS) {
-              throw new Error('替换白名单由 DSH_MEMORY_CORE_REPLACE_SESSIONS 指定，面板改不了');
-            }
-            if (!lastSid) throw new Error('还没有会话记录，先发一句话再开');
-            // 只动本会话那一行；手写的 * 和别的会话一律保留。
-            const rest = readWhitelist().filter((line) => line.split(':')[0] !== lastSid);
-            if (value === 'on') rest.push(`${lastSid}:full`);
-            writeWhitelist(rest);
-            log(`panel: replace ${value} sid=${lastSid}`);
+            writeSmall(REPLACE_MODE_FILE, value === 'on' ? 'on\n' : 'off\n');
+            log(`panel: replace ${value}`);
             return { ok: true, value: panelState() };
           }
+          if (key === 'AUTO_BLACKLIST') {
+            writeSmall(AUTO_BLACKLIST_FILE, value === 'on' ? 'on\n' : 'off\n');
+            log(`panel: auto-blacklist ${value}`);
+            return { ok: true, value: panelState() };
+          }
+          // 调试设置：层开关只改内存里的 env，重启回默认。
           if (!LAYER_KEYS.includes(key)) throw new Error(`未知的开关：${key}`);
           process.env[`DSH_MEMORY_CORE_${key}`] = value;
           log(`panel: ${key}=${value}`);
+          return { ok: true, value: panelState() };
+        }
+        if (endpoint === 'blacklist') {
+          const sid = String(input?.sid ?? '');
+          if (!sid) throw new Error('sid 不能为空');
+          const current = blacklistLines();
+          const next = String(input?.action ?? 'add') === 'remove'
+            ? current.filter((line) => line !== sid)
+            : (current.includes(sid) ? current : [...current, sid]);
+          writeBlacklist(next);
+          log(`panel: blacklist ${input?.action ?? 'add'} ${sid}`);
           return { ok: true, value: panelState() };
         }
         if (endpoint === 'context') {
@@ -430,6 +496,24 @@ export function apply(ctx) {
       const db = currentStore();
       if (!db) return;
       startTimer();
+      // 「新会话自动进黑名单」：必须在 ingestEvent 之前判断，否则刚写进去的这条
+      // 会让它看起来「本来就有记录」。内存 Set 只用来避免每个事件都查一次库；
+      // 重启后 Set 是空的，靠 turns 表里的行判断，再补一次。
+      const sid0 = sidOf(session);
+      if (!seenSessions.has(sid0)) {
+        seenSessions.add(sid0);
+        if (readAutoBlacklist()) {
+          try {
+            const known = db.prepare('SELECT 1 FROM turns WHERE sid = ? LIMIT 1').get(sid0);
+            if (!known) {
+              addToBlacklist(sid0);
+              log(`auto-blacklist: ${sid0}`);
+            }
+          } catch (error) {
+            log(`auto-blacklist failed: ${error?.message ?? error}`);
+          }
+        }
+      }
       const inserted = ingestEvent(db, session, event);
       if (event?.type === 'user/message' || event?.type === 'assistant/message') {
         log(`${event.type} seq=${event.seq} inserted=${inserted}`);

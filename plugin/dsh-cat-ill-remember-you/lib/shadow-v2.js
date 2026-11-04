@@ -270,7 +270,8 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note
     (keywords.length > 0 ? `关键词：${keywords.join('、')}\n` : '') +
     (promises.length > 0 ? `约定：${promises.join('；')}\n` : '') +
     (note ? `${note}\n` : '');
-  const limit = Math.max(80, maxChars - header.length - 10);
+  // 尾部那段说明也要占预算：它只在「塞不下」时出现，长度不可预知，先留 70 字。
+  const limit = Math.max(80, maxChars - header.length - 10 - 70);
   const picked = [];
   let size = 0;
   let skipped = 0;
@@ -303,7 +304,11 @@ export function renderReplacement(replaced, { maxChars = MAX_REPLACE_CHARS, note
       ? `\n（预算 ${maxChars} 字，更早的 ${skipped} 条没展开；它们只在关键词里，原文按 seq 回查。）`
       : '';
   const out = header + picked.join('\n') + tail;
-  return out.length <= maxChars + 120 ? out : `${out.slice(0, maxChars + 119)}…`;
+  if (out.length <= maxChars) return out;
+  // 兜底：尾部说明可有可无，先去掉它；还超才硬截。
+  const body = header + picked.join('\n');
+  if (body.length <= maxChars) return body;
+  return `${body.slice(0, maxChars - 1)}…`;
 }
 
 /** 被换窗口里的锚点/实体，去重。实体在前：回放显示 entities key 的断链率是 anchors 的十分之一。 */
@@ -405,50 +410,59 @@ export function recordShadowV2(db, row) {
     );
 }
 
-/** 旧的全局开关，保留导出只为兼容；现在开关就是白名单文件本身。 */
-/** @deprecated 已不读这个环境变量；开关只看下面的白名单文件。保留导出仅为兼容旧脚本。 */
+/** 旧的全局开关，保留导出只为兼容旧脚本；真正的开关是 replace-mode.txt 与黑名单。 */
+/** @deprecated 已不读这个环境变量。 */
 export const REPLACE_FLAG = 'DSH_MEMORY_CORE_REPLACE';
 
-/** 白名单文件：每行一个 session id，`*` 表示全部。只有列在里面的会话才真替换。 */
-export const REPLACE_SESSIONS_FLAG = 'DSH_MEMORY_CORE_REPLACE_SESSIONS';
-export const REPLACE_SESSIONS_FILE = path.join(os.homedir(), '.dsh', 'cache', 'replace-sessions.txt');
+/** 全局替换开关：内容 `on` / `off`。黑名单：每行一个 session id，`*` 表示全部。 */
+export const REPLACE_MODE_FILE = path.join(os.homedir(), '.dsh', 'cache', 'replace-mode.txt');
+export const REPLACE_BLACKLIST_FILE = path.join(os.homedir(), '.dsh', 'cache', 'replace-blacklist.txt');
+export const AUTO_BLACKLIST_FILE = path.join(os.homedir(), '.dsh', 'cache', 'auto-blacklist.txt');
 
-function sessionsFile() {
-  return process.env[REPLACE_SESSIONS_FLAG] || REPLACE_SESSIONS_FILE;
+// 测试要能指到临时文件，所以路径每次现取；生产里就是上面三个常量。
+function replaceModeFile() {
+  return process.env.DSH_MEMORY_CORE_REPLACE_MODE_FILE || REPLACE_MODE_FILE;
+}
+function blacklistFile() {
+  return process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE || REPLACE_BLACKLIST_FILE;
+}
+export function autoBlacklistFile() {
+  return process.env.DSH_MEMORY_CORE_AUTO_BLACKLIST_FILE || AUTO_BLACKLIST_FILE;
 }
 
-// 白名单文件很小，但 replaceMode 会被 provider.text() 每次 refresh 调到，
-// 也会在每个 assistant 事件里调到。按 mtime+size 缓存内容，只在文件真变了
-// 才重读；读失败不写缓存，文件后来出现仍能读到。
-const sessionsCache = { file: '', mtimeMs: -1, size: -1, text: null };
-
-function sessionsText() {
-  const file = sessionsFile();
+// 两个小文件也按 mtime+size 缓存：replaceMode 每轮会被 provider.text() 和
+// 每个 assistant 事件调到好几次，不值得每次都 stat 一遍再读。
+const textCache = new Map();
+function cachedText(file) {
   let stat;
   try {
     stat = fs.statSync(file);
   } catch {
     return null;
   }
-  const { mtimeMs, size } = stat;
-  if (
-    sessionsCache.file === file
-    && sessionsCache.mtimeMs === mtimeMs
-    && sessionsCache.size === size
-  ) {
-    return sessionsCache.text;
-  }
+  const key = `${stat.mtimeMs}:${stat.size}`;
+  const hit = textCache.get(file);
+  if (hit && hit.key === key) return hit.text;
   let text;
   try {
     text = fs.readFileSync(file, 'utf8');
   } catch {
     return null;
   }
-  sessionsCache.file = file;
-  sessionsCache.mtimeMs = mtimeMs;
-  sessionsCache.size = size;
-  sessionsCache.text = text;
+  textCache.set(file, { key, text });
   return text;
+}
+
+/** 黑名单行（保留原样的 sid 字符串，供面板显示）。 */
+export function blacklistLines() {
+  const text = cachedText(blacklistFile());
+  return text == null ? [] : text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function blacklisted(id) {
+  if (!id) return false;
+  const lines = blacklistLines();
+  return lines.includes('*') || lines.includes(id);
 }
 
 export function replaceEnabled(sid) {
@@ -456,22 +470,18 @@ export function replaceEnabled(sid) {
 }
 
 /**
- * 白名单里每行可以是 `sid`（滚动小步）、`sid:full`（一次换掉全部旧历史）
- * 或 `sid:append`（不动历史，只在上下文末尾追加一块「如果替换会变成什么样」）；
- * `*`/`*:full`/`*:append` 对所有会话生效。返回 'off' | 'roll' | 'full' | 'append'。
+ * 两个开关，优先级从高到低：
+ * 1. 黑名单——命中就一律不替换，压过全局开关；
+ * 2. 全局开关 `replace-mode.txt`——`on` 时所有会话都按 full 替换。
+ * 白名单已经删了：`roll` / `append` 两个模式也一并作废，只保留 off / full。
  * @param {string|null|undefined} sid
- * @returns {'off'|'roll'|'full'|'append'}
+ * @returns {'off'|'full'}
  */
 export function replaceMode(sid) {
-  const text = sessionsText();
-  if (text == null) return 'off';
-  const allowed = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (allowed.length === 0) return 'off';
   const id = sid == null ? '' : String(sid);
-  if (allowed.includes('*:full') || allowed.includes(`${id}:full`)) return 'full';
-  if (allowed.includes('*:append') || allowed.includes(`${id}:append`)) return 'append';
-  if (allowed.includes('*') || allowed.includes(id)) return 'roll';
-  return 'off';
+  if (blacklisted(id)) return 'off';
+  const mode = String(cachedText(replaceModeFile()) ?? '').trim().toLowerCase();
+  return mode === 'on' || mode === 'full' ? 'full' : 'off';
 }
 
 /** 上一次记账是不是同一个区间且已应用——是就不用再算一遍。 */
@@ -614,6 +624,12 @@ export function planShadowV2(
     }
   }
   const entries = surfaceMessages(session, maxSeq);
+  // 全局开关一开，所有会话都走 full。太短的会话换不出东西，反而容易把
+  // 当前这一问压进替换区（2 条时 kept=1、被换的正是用户刚说的话）。
+  if (entries.length < MIN_ENTRIES) {
+    if (dryRun) log(`preview: full entries=${entries.length} < ${MIN_ENTRIES}`);
+    return null;
+  }
   let replaced;
   let kept;
   let rangeStart = null;

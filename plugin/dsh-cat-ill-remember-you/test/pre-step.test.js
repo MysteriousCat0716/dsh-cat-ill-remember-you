@@ -119,12 +119,15 @@ async function runPreStep({
   }
   const previous = process.env.DSH_MEMORY_CORE_DB;
   process.env.DSH_MEMORY_CORE_DB = file;
-  const allowFile = path.join(dir, 'allow.txt');
-  if (allow) fs.writeFileSync(allowFile, 'new-session:full\n');
-  const previousAllow = process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-  process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = allow
-    ? allowFile
-    : path.join(dir, 'no-allow.txt');
+  // 替换开关现在只有两个文件：全局开关 + 黑名单。测试用临时文件，不能碰真实缓存。
+  const modeFile = path.join(dir, 'replace-mode.txt');
+  fs.writeFileSync(modeFile, allow ? 'on\n' : 'off\n');
+  const blackFile = path.join(dir, 'replace-blacklist.txt');
+  fs.writeFileSync(blackFile, '');
+  const previousMode = process.env.DSH_MEMORY_CORE_REPLACE_MODE_FILE;
+  const previousBlack = process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE;
+  process.env.DSH_MEMORY_CORE_REPLACE_MODE_FILE = modeFile;
+  process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE = blackFile;
   const harness = fakeCtx(cwd, history);
   try {
     apply(harness.ctx);
@@ -149,8 +152,10 @@ async function runPreStep({
     harness.dispose();
     if (previous === undefined) delete process.env.DSH_MEMORY_CORE_DB;
     else process.env.DSH_MEMORY_CORE_DB = previous;
-    if (previousAllow === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS;
-    else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousAllow;
+    if (previousMode === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_MODE_FILE;
+    else process.env.DSH_MEMORY_CORE_REPLACE_MODE_FILE = previousMode;
+    if (previousBlack === undefined) delete process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE;
+    else process.env.DSH_MEMORY_CORE_REPLACE_BLACKLIST_FILE = previousBlack;
     for (const [key, value] of Object.entries(previousEnv)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
