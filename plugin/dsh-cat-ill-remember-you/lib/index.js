@@ -342,13 +342,14 @@ export function apply(ctx) {
             if (hit.section === 'persona') continue;
             try {
               db.prepare(
-                'INSERT INTO recall_log (sid, turn, t, memory_id, why) VALUES (?, ?, ?, ?, ?)',
+                'INSERT INTO recall_log (sid, turn, t, memory_id, why, section) VALUES (?, ?, ?, ?, ?, ?)',
               ).run(
                 sid,
                 turnNo,
                 Date.now(),
                 hit.source === 'memory' ? hit.id : null,
                 hit.why ?? '',
+                hit.section === 'persona' ? 'persona' : 'recall',
               );
             } catch (error) {
               log(`recall log failed: ${error?.message ?? error}`);

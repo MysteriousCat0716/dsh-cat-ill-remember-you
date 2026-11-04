@@ -718,10 +718,10 @@ export function markRecallUsed(db, { sid, text }) {
   // 不结算的话，40 轮前滑出窗口的行会永远 NULL，「used=1 / 总注入」的分母失真。
   db.prepare(
     `UPDATE recall_log SET used = 0
-     WHERE sid = ? AND used IS NULL AND memory_id IS NOT NULL
+     WHERE sid = ? AND used IS NULL AND memory_id IS NOT NULL AND section = 'recall'
        AND id NOT IN (
          SELECT id FROM recall_log
-         WHERE sid = ? AND used IS NULL AND memory_id IS NOT NULL
+         WHERE sid = ? AND used IS NULL AND memory_id IS NOT NULL AND section = 'recall'
          ORDER BY id DESC LIMIT ${USED_WINDOW}
        )`,
   ).run(String(sid), String(sid));
@@ -733,7 +733,7 @@ export function markRecallUsed(db, { sid, text }) {
       `SELECT l.id, m.anchors, m.entities
        FROM recall_log l
        JOIN memories m ON m.id = l.memory_id
-       WHERE l.sid = ? AND l.used IS NULL AND l.memory_id IS NOT NULL
+       WHERE l.sid = ? AND l.used IS NULL AND l.memory_id IS NOT NULL AND l.section = 'recall'
        ORDER BY l.id DESC
        LIMIT ${USED_WINDOW}`,
     )

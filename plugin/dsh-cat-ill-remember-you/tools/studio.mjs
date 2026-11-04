@@ -69,6 +69,7 @@ function account(db, limit) {
       `SELECT l.id, l.sid, l.turn, l.t, l.memory_id, l.why, l.used, m.text, m.kind
        FROM recall_log l
        LEFT JOIN memories m ON m.id = l.memory_id
+       WHERE l.section = 'recall'
        ORDER BY l.id DESC
        LIMIT ?`,
     )
@@ -100,7 +101,8 @@ function account(db, limit) {
          sum(CASE WHEN used = 1 THEN 1 ELSE 0 END) AS used,
          sum(CASE WHEN used IS NULL AND memory_id IS NOT NULL THEN 1 ELSE 0 END) AS pending,
          count(*) AS total
-       FROM recall_log`,
+       FROM recall_log
+       WHERE section = 'recall'`,
     )
     .get();
 

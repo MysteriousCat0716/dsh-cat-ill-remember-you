@@ -83,7 +83,10 @@ CREATE TABLE IF NOT EXISTS recall_log (
   memory_id INTEGER,
   why       TEXT    NOT NULL DEFAULT '',
   score     REAL,
-  used      INTEGER
+  used      INTEGER,
+  -- 'recall' = 这一轮真正检索出来的条目；'persona' = 常驻偏好，每轮由 personaOf
+  -- 重挑，不代表「这次取回用没用上」。分开记，分母才干净。
+  section   TEXT    NOT NULL DEFAULT 'recall'
 );
 
 -- 召回账：每轮一行，记「候选里哪几条没被选上、为什么」。
@@ -241,6 +244,7 @@ export function openStore(file = DEFAULT_DB_FILE) {
       .all()
       .some((row) => row.name === 'token_keep');
     ensureColumn(db, 'shadow_v2', 'token_keep', 'REAL NOT NULL DEFAULT 0');
+    ensureColumn(db, 'recall_log', 'section', "TEXT NOT NULL DEFAULT 'recall'");
     if (addedTokenKeep) {
       db.exec('UPDATE shadow_v2 SET token_keep = MAX(0, 1 - lost_ratio)');
     }

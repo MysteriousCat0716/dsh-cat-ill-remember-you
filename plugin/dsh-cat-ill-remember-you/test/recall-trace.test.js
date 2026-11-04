@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openStore } from '../lib/db.js';
-import { retrieve } from '../lib/recall.js';
+import { retrieve, markRecallUsed } from '../lib/recall.js';
 
 // 单元测试不依赖本机 Ollama。
 process.env.DSH_MEMORY_CORE_VECTOR = 'off';
@@ -69,5 +69,31 @@ test('recall trace: 空结果也带 trace，且不把属性算进长度', async 
   const hits = await retrieve(db, { text: '今天天气不错', recent: [] });
   assert.equal(hits.length, 0);
   assert.deepEqual(hits.trace, []);
+  db.close();
+});
+
+test('used 回填只结算 section=recall，常驻行不动', () => {
+  const db = openStore(':memory:');
+  insertMemory(db, {
+    summary: 'lib/recall.js 的旧笔记',
+    text: 'lib/recall.js 的旧笔记。',
+    anchors: ['lib/recall.js'],
+    t: 1000,
+  });
+  const memId = db.prepare('SELECT id FROM memories LIMIT 1').get().id;
+  const insert = db.prepare(
+    'INSERT INTO recall_log (sid, turn, t, memory_id, why, section) VALUES (?, ?, ?, ?, ?, ?)',
+  );
+  insert.run('s1', 1, 1000, memId, '长期偏好/约定，每轮都在场。', 'persona');
+  insert.run('s1', 1, 1000, memId, '这一轮提到 lib/recall.js', 'recall');
+
+  const marked = markRecallUsed(db, { sid: 's1', text: 'lib/recall.js 现在怎么改' });
+
+  assert.equal(marked, 1);
+  const rows = db.prepare('SELECT section, used FROM recall_log ORDER BY id').all();
+  assert.equal(rows[0].section, 'persona');
+  assert.equal(rows[0].used, null, '常驻行不该被结算');
+  assert.equal(rows[1].section, 'recall');
+  assert.equal(rows[1].used, 1);
   db.close();
 });
