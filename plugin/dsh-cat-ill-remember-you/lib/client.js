@@ -98,7 +98,6 @@ window.__ModuleLoader__.load({
       const [state, setState] = React.useState(null);
       const [error, setError] = React.useState('');
       const [busy, setBusy] = React.useState('');
-      const [previewInfo, setPreviewInfo] = React.useState('');
       const [contextInfo, setContextInfo] = React.useState('');
 
       const load = React.useCallback(() => {
@@ -124,20 +123,6 @@ window.__ModuleLoader__.load({
         try {
           const next = await call('set', { key, value: current ? 'off' : 'on' });
           setState(next);
-        } catch (e) {
-          setError(String(e && e.message ? e.message : e));
-        } finally {
-          setBusy('');
-        }
-      };
-
-      const preview = async () => {
-        if (busy) return;
-        setBusy('PREVIEW');
-        setError('');
-        try {
-          const res = await call('preview');
-          setPreviewInfo(`已写入并用记事本打开 ${res.path}（${res.before} → ${res.after} 字）`);
         } catch (e) {
           setError(String(e && e.message ? e.message : e));
         } finally {
@@ -294,26 +279,6 @@ window.__ModuleLoader__.load({
                   h(
                     'button',
                     {
-                      key: 'btn',
-                      type: 'button',
-                      disabled: state === null || busy === 'PREVIEW',
-                      onClick: preview,
-                      style: {
-                        padding: '5px 12px',
-                        borderRadius: 6,
-                        border: `1px solid ${line}`,
-                        background: 'transparent',
-                        color: text1,
-                        fontSize: 12,
-                        cursor: state === null || busy === 'PREVIEW' ? 'default' : 'pointer',
-                        opacity: state === null || busy === 'PREVIEW' ? 0.5 : 1,
-                      },
-                    },
-                    busy === 'PREVIEW' ? '计算中…' : '输出预览',
-                  ),
-                  h(
-                    'button',
-                    {
                       key: 'ctxbtn',
                       type: 'button',
                       disabled: state === null || busy === 'CONTEXT',
@@ -329,19 +294,19 @@ window.__ModuleLoader__.load({
                         opacity: state === null || busy === 'CONTEXT' ? 0.5 : 1,
                       },
                     },
-                    busy === 'CONTEXT' ? '计算中…' : '整轮上下文',
+                    busy === 'CONTEXT' ? '计算中…' : '生成替换上下文',
                   ),
                   h(
                     'span',
                     { key: 'path', style: { fontSize: 11, color: text2, wordBreak: 'break-all' } },
-                    previewInfo || contextInfo || (state && state.previewLog ? state.previewLog : ''),
+                    contextInfo || (state && state.contextLog ? state.contextLog : ''),
                   ),
                 ],
               ),
               h(
                 'div',
                 { key: 'note', style: { fontSize: 11, color: text2, marginTop: 8 } },
-                '两个按钮都不改历史、不记账、不看冷却。「输出预览」只看替换块；「整轮上下文」看这一轮模型真正会收到的全文（栈、记忆、替换块、保留区）。',
+                '只推演：不改历史、不记账、不看冷却。生成的是一份「若现在开替换，这一轮模型会收到的完整上下文」——全局栈、记忆块、替换块、保留区都在同一个文件里。',
               ),
             ],
           ),

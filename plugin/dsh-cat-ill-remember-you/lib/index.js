@@ -225,7 +225,6 @@ export function apply(ctx) {
   // （CLI / 无 webServer 的 profile）直接跳过，插件照常加载。
   // 替换白名单与预览日志都是磁盘文件：面板只做读写，不另存一份状态。
   const REPLACE_FILE = path.join(os.homedir(), '.dsh', 'cache', 'replace-sessions.txt');
-  const PREVIEW_LOG = path.join(os.homedir(), '.dsh', 'cache', 'replace-preview.log');
   const CONTEXT_LOG = path.join(os.homedir(), '.dsh', 'cache', 'context-preview.log');
   const readWhitelist = () => {
     try {
@@ -244,7 +243,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.24',
+    version: '0.8.25',
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
@@ -256,7 +255,7 @@ export function apply(ctx) {
     // 「替换开关」跟着最后说话的那个会话走。
     replaceOn: lastSid ? replaceMode(lastSid) !== 'off' : false,
     replaceSid: lastSid ? lastSid.slice(-6) : '',
-    previewLog: PREVIEW_LOG,
+    contextLog: CONTEXT_LOG,
   });
   const LAYER_KEYS = ['STACK', 'PERSONA', 'PEOPLE', 'RECALL', 'ENRICH'];
   // connection.rpc.handle 内部要 webServer.register，owner ctx 必须连 webServer 一起注入
@@ -289,46 +288,6 @@ export function apply(ctx) {
           log(`panel: ${key}=${value}`);
           return { ok: true, value: panelState() };
         }
-        if (endpoint === 'preview') {
-          // 重启后模块里没记过任何会话（lastSession 为空）。会话本身是持久的：
-          // turns 表里每条都带 sid，取最后一条的 sid 就知道「最后说话的是谁」，
-          // 再向宿主要那个活会话对象。最后才退到「最近创建的那个」。
-          const db = currentStore();
-          if (!db) throw new Error('记忆库没打开');
-          let session = lastSession;
-          if (!session) {
-            const last = db.prepare('SELECT sid FROM turns ORDER BY t DESC LIMIT 1').get();
-            if (last?.sid) session = ctx.sessions.get(last.sid) ?? null;
-          }
-          if (!session) session = ctx.sessions.list().at(-1) ?? null;
-          if (!session) throw new Error('还没有会话记录，先发一句话');
-          const sid = sidOf(session);
-          log(`preview: session=${sid} nodes=${session?.surface?.nodes?.length ?? 0} last=${Boolean(lastSession)}`);
-          // 只推演：不写 surface、不记账、不看冷却，随时可以点。
-          // 第三个参数是 options 对象，不是布尔；写成 true 时 dryRun 会是
-          // undefined，等于没开推演，白名单外直接返回 null。
-          const row = planShadowV2(session, db, { dryRun: true });
-          if (!row) throw new Error('这一轮没有可替换的历史（消息太少，或还没到可换的区间）');
-          const header =
-            `[${new Date().toISOString()}] sid=${sid.slice(-6)} range=${row.rangeStart}-${row.rangeEnd} ` +
-            `chars=${row.charsBefore}->${row.charsAfter} kept=${row.kept} ` +
-            `lost=${Number(row.lostRatio ?? 0).toFixed(3)} dangling=${row.dangling}`;
-          fs.mkdirSync(path.dirname(PREVIEW_LOG), { recursive: true });
-          // 覆盖写：预览只保留最近一次，文件不会越点越长。
-          fs.writeFileSync(PREVIEW_LOG, `${header}\n${row.text}\n${'-'.repeat(70)}\n`, 'utf8');
-          log(`panel: preview sid=${sid} chars=${row.charsAfter}`);
-          // 写完就用记事本打开，省掉「去文件夹里找」那一步。
-          // 打不开不影响写入结果，只在日志里记一笔。
-          try {
-            execFile('notepad.exe', [PREVIEW_LOG], () => {});
-          } catch (error) {
-            log(`preview open failed: ${error?.message ?? error}`);
-          }
-          return {
-            ok: true,
-            value: { path: PREVIEW_LOG, before: row.charsBefore, after: row.charsAfter, text: row.text },
-          };
-        }
         if (endpoint === 'context') {
           // 「整轮上下文」预览：回答「现在开替换，下一轮模型会看到什么」。
           // 唯一估的是记忆检索——它拿当前句当 query，没有下一轮的输入，
@@ -347,7 +306,73 @@ export function apply(ctx) {
           // 最后一条是本轮；倒数第二条才是「上一轮开始时」的状态。
           // 面板问的是「假设现在是上一轮，我会看到什么」，所以用它。
           const prev = history.length >= 2 ? history[history.length - 2] : history[history.length - 1];
-          const hint = prev?.hint ?? hintBySid.get(sid) ?? lastBaseHint ?? '';
+          let hint = prev?.hint ?? hintBySid.get(sid) ?? lastBaseHint ?? '';
+          let rebuilt = false;
+          if (!hint) {
+            // 重启后还没跑过任何一轮 pre-step，这里本来就是空的。面板要回答
+            // 「插件正常完整跑起来会输出什么」，不能空着交差，就从库里现场重算：
+            // 栈按 surface 最近 6 条排除，检索拿最后一条用户消息当 query。
+            rebuilt = true;
+            const parts = [];
+            const stackOn = envOn('DSH_MEMORY_CORE_STACK', true);
+            try {
+              const surfaceSeqs = (session?.surface?.nodes ?? [])
+                .map((node) => Number(node?.seq))
+                .filter((seq) => Number.isFinite(seq) && seq > 0)
+                .slice(-6);
+              if (stackOn) {
+                const stacked = renderStack(db, { sid, excludeSeqs: surfaceSeqs });
+                if (stacked) {
+                  parts.push(
+                    replaceMode(sid) === 'off'
+                      ? `${stacked}\n（本会话不在替换白名单：以上栈只用于预览，不改写本会话历史。）`
+                      : stacked,
+                  );
+                }
+              }
+            } catch (error) {
+              log(`context stack failed: ${error?.message ?? error}`);
+            }
+            if (envOn('DSH_MEMORY_CORE_PERSONA', false)) {
+              try {
+                const personaText = renderPersona(db);
+                if (personaText) parts.push(personaText);
+              } catch (error) {
+                log(`context persona failed: ${error?.message ?? error}`);
+              }
+            }
+            const lastUser = db
+              .prepare("SELECT text FROM turns WHERE sid = ? AND role = 'user' ORDER BY seq DESC LIMIT 1")
+              .get(sid);
+            const lastText = String(lastUser?.text ?? '');
+            if (envOn('DSH_MEMORY_CORE_PEOPLE', true)) {
+              try {
+                const peopleText = renderPeople(db, lastText);
+                if (peopleText) parts.push(peopleText);
+              } catch (error) {
+                log(`context people failed: ${error?.message ?? error}`);
+              }
+            }
+            const query = [stackOn ? stackQueryText(db, { limit: 2 }) : '', lastText]
+              .filter(Boolean)
+              .join('\n');
+            if (query && envOn('DSH_MEMORY_CORE_RECALL', true)) {
+              try {
+                const hits = await retrieve(db, {
+                  text: query,
+                  cwd: session?.header?.cwd,
+                  recent: [],
+                  sid,
+                  turn: 0,
+                  referralText: lastText,
+                });
+                if (hits.length > 0) parts.push(renderHint(hits));
+              } catch (error) {
+                log(`context recall failed: ${error?.message ?? error}`);
+              }
+            }
+            hint = parts.join('\n\n');
+          }
           const maxSeq = prev ? prev.seq : Number.MAX_SAFE_INTEGER;
           const row = planShadowV2(session, db, { dryRun: true, maxSeq });
           const tail = db
@@ -355,8 +380,10 @@ export function apply(ctx) {
             .all(sid, maxSeq)
             .reverse();
           const lines = [
-            `[${new Date().toISOString()}] sid=${sid.slice(-6)} 整轮上下文预览（回到上一轮的状态）`,
-            '倒回到上一轮开始时：记忆块是那一轮真算的，替换块和保留区也按那时候的历史推。这一轮的输入当作还没发生。',
+            `[${new Date().toISOString()}] sid=${sid.slice(-6)} 整轮上下文预览（${rebuilt ? '重启后现场重算' : '回到上一轮的状态'}）`,
+            rebuilt
+              ? '这一轮还没有 pre-step 记录（刚重启）：记忆块按最后一条用户消息现场重算，替换块与保留区按当前历史推。'
+              : '倒回到上一轮开始时：记忆块是那一轮真算的，替换块和保留区也按那时候的历史推。这一轮的输入当作还没发生。',
             '',
             '=== 一 · 全局栈 + 记忆块（上一轮 pre-step 实际注入）===',
             hint || '（这一轮还没有 pre-step 记录）',
