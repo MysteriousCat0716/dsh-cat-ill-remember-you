@@ -141,6 +141,14 @@ export function entitiesOf(text) {
 const ATTITUDE =
   /决定|定了|就这样|采用|选用|还是用|以后|下次|记住|不再|改成|必须|规则|约定|偏好|更喜欢|讨厌|不喜欢|受不了|烦死|最爱/;
 
+// 我的表态：只有「我怎么想」这一类句子才值得立记忆。我的过程、我的技术决定
+// 不立——它们在 git、交接、日志里，取回来只会让三个月后的我把「我做过」当成
+// 「他定过」。见 记忆核心/设计-哪些话不建记忆-2026-11-04.md 第六节。
+const SELF_STANCE = /我觉得|我认为|我在意|我不喜欢|我不想要|我希望自己|我想成为|我拒绝|我的判断|我更愿意/;
+
+// 我的过程句：这些是日志，不是判断。
+const PROCESS = /改完|改好|跑通|跑完|读完|写完|提交了|推上去|测试通过|接下来|下一步|我先|我这就|已经修好|已经改好|我打算|我准备|我查了|我看了|我读了|我发现了|我注意到|我改|我加|我删|我写|我跑|我看到了/;
+
 /**
  * Who a memory is about: the human or the assistant.
  * 普通事实看来源（有 user 就是 user）；决定和偏好默认也是他——只有我明确表了态
@@ -241,6 +249,9 @@ export function candidateOf(block) {
 
   const kind = classify(userText, allText);
   const subject = subjectOf(userText, botText, kind);
+  // 我的过程和计划不立记忆（设计-哪些话不建记忆 第六节）。只拦「过程句」，
+  // 不拦我把他的决定总结成一句话——那种块的主语本来就该是他的嘴。
+  if (subject === 'assistant' && PROCESS.test(botText) && !SELF_STANCE.test(botText)) return null;
   const summary = digestOf(userText, botText, subject);
   const scene = head(userText || botText, 50);
   return {

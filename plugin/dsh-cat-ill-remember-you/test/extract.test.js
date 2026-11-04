@@ -286,6 +286,16 @@ test('candidateOf: 决定是助手总结的，subject 记 assistant', () => {
   assert.equal(c.subject, 'assistant', '表态词不在用户嘴里，这条不是他的决定');
 });
 
+test('candidateOf: 我的过程句不立记忆', () => {
+  const c = candidateOf({
+    turns: [
+      turn({ role: 'user', text: '嗯，就按你说的办。' }),
+      turn({ id: 2, role: 'assistant', text: '那就这样定了：改完了，测试通过，提交了 a4e44ba。' }),
+    ],
+  });
+  assert.equal(c, null);
+});
+
 test('candidateOf: 用户自己说「以后」，subject 仍是 user', () => {
   const c = candidateOf({
     turns: [
