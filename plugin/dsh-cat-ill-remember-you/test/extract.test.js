@@ -134,6 +134,27 @@ test('refine: inserts memories and consumes the turns', () => {
   assert.ok(rows[0].summary.length > 0);
 });
 
+test('refine: 同一件事说到第三次，原地折成「反复出现」', () => {
+  const db = openStore(':memory:');
+  for (let i = 0; i < 3; i += 1) {
+    const base = 1000 + i * 1000;
+    insertTurn(db, {
+      sid: 's1',
+      seq: i * 2 + 1,
+      role: 'user',
+      text: `以后 dsh-memory 的原文都先读再看（第 ${i + 1} 次）`,
+      t: base,
+    });
+    insertTurn(db, { sid: 's1', seq: i * 2 + 2, role: 'assistant', text: '好，记住了。', t: base + 1 });
+    refine(db);
+  }
+  const rows = db.prepare('SELECT mentions, summary FROM memories').all();
+  assert.equal(rows.length, 1, '反复说同一件事只留一条');
+  assert.equal(rows[0].mentions, 3);
+  assert.match(rows[0].summary, /^反复出现：/);
+  db.close();
+});
+
 test('refine: an empty block is scanned but not consumed', () => {
   const db = openStore(':memory:');
   insertTurn(db, { sid: 's1', seq: 1, role: 'user', text: '嗯', t: 1000 });
