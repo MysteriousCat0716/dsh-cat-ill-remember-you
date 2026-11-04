@@ -276,7 +276,8 @@ export function candidateOf(block) {
     kind,
     origin: user?.origin ?? 'chat',
     subject,
-    text: allText.slice(0, 2000),
+    // 转发是原文，截断就指不回去了；其余仍压到 2000 字，底账另有 turns。
+    text: kind === 'reference' ? allText : allText.slice(0, 2000),
     summary,
     entities: entitiesOf(allText),
     anchors: anchorsOf(allText),
