@@ -10,6 +10,12 @@ import { refineBlock, wantsImmediate } from './extract.js';
  */
 const pendingImmediate = new Map();
 
+/** 即时通道失败不再静默：插件入口把日志函数转进来。 */
+let warn = () => {};
+export function setIngestLogger(fn) {
+  warn = typeof fn === 'function' ? fn : () => {};
+}
+
 /** 静默窗：最后一条 assistant 落库后再等这么久，认为这一轮说完了。 */
 const IMMEDIATE_QUIET_MS = 30_000;
 
@@ -199,8 +205,9 @@ function runImmediate(db, sid) {
       const result = refineBlock(db, { sid, userSeq });
       memories += result.memories;
       if (result.reason === 'incomplete') keep.add(userSeq);
-    } catch {
-      /* 即时提炼不能连累 ingest；漏掉的块由空闲批兜底 */
+    } catch (error) {
+      // 即时提炼不能连累 ingest；但失败得能看见，漏掉的块由空闲批兜底。
+      warn(`immediate failed sid=${sid} seq=${userSeq}: ${error?.message ?? error}`);
     }
   }
   if (keep.size > 0) pendingImmediate.set(sid, { userSeqs: keep, timer: null });

@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { openStore, pendingCount } from './db.js';
 import { refine } from './extract.js';
-import { ingestEvent, textOf } from './ingest.js';
+import { ingestEvent, setIngestLogger, textOf } from './ingest.js';
 import { sidOf } from './sid.js';
 import { retrieve, renderHint, markRecallUsed } from './recall.js';
 import { shadowPlan, recordShadow } from './shadow.js';
@@ -81,6 +81,8 @@ export function apply(ctx) {
   setOriginalsLogger(log);
   // 替换失败的分支也接日志：applied=0 时得看得到是哪一条前置条件没过。
   setShadowLogger(log);
+  // 即时通道的 catch 以前是空的：失败和「没这回事」在日志里分不清。
+  setIngestLogger(log);
   let store;
   // pre-step 算出的记忆块文本，按会话存；provider 在 assemble/refreshContext 时取。
   const hintBySid = new Map();
