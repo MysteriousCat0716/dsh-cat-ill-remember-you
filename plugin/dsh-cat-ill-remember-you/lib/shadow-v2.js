@@ -299,10 +299,20 @@ function toolNote(session, seqs) {
   return `［工具结果 ${results.length} 个：\n${lines.join('\n')}\n${where.join('；')}］`;
 }
 
-/** surface 上 seq 落在区间内的节点（含工具节点）。 */
-function nodesBetween(session, from, to) {
+/**
+ * surface 上 from 到 to 之间的节点（按位置取，含端点；供 toolNote 列工具结果）。
+ * 不能按 seq 数值过滤：早先替换块的 seq 比它所在位置大，会夹在当前区间中间，
+ * 值过滤会整段漏掉（applyReplacement 早已按位置取，这里跟着同一套语义）。
+ * 端点不在表面上时返回空——那段已经被替换块盖住了，没有可列的节点。
+ */
+export function nodesBetween(session, from, to) {
   const nodes = Array.isArray(session?.surface?.nodes) ? session.surface.nodes : [];
-  return nodes.filter((seq) => Number(seq) >= Number(from) && Number(seq) <= Number(to));
+  const startIdx = nodes.indexOf(from);
+  const endIdx = nodes.indexOf(to);
+  if (startIdx < 0 || endIdx < 0) return [];
+  const lo = Math.min(startIdx, endIdx);
+  const hi = Math.max(startIdx, endIdx);
+  return nodes.slice(lo, hi + 1);
 }
 
 /**

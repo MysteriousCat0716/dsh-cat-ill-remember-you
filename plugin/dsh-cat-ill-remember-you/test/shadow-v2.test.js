@@ -15,6 +15,7 @@ import {
   planShadowV2,
   replaceMode,
   keyTokens,
+  nodesBetween,
 } from '../lib/shadow-v2.js';
 
 /** 假 session：nodes 是 seq 数组，eventAt/deriveEventMessage 按 seq 取回。 */
@@ -581,6 +582,17 @@ test('applyReplacement: 位置区间里夹着早先替换块时，按位置取 s
     else process.env.DSH_MEMORY_CORE_REPLACE_SESSIONS = previousList;
     list.cleanup();
   }
+});
+
+test('nodesBetween: 按位置取节点，不按 seq 数值过滤', () => {
+  // 旧替换块 seq=313 位置在 100 与 101 之间，值却比区间尾部 102 大。
+  const session = { surface: { nodes: [0, 100, 313, 101, 102] } };
+  assert.deepEqual(nodesBetween(session, 100, 102), [100, 313, 101, 102]);
+  // 端点数值倒过来也按位置取（rangeStart 可能大于 rangeEnd）。
+  assert.deepEqual(nodesBetween(session, 102, 100), [100, 313, 101, 102]);
+  // 端点不在表面上：这段已被替换块盖住，返回空。
+  assert.deepEqual(nodesBetween(session, 100, 999), []);
+  assert.deepEqual(nodesBetween(undefined, 100, 102), []);
 });
 
 test('planShadowV2: 白名单内 apply 失败后同区间下一轮会重试，成功后不再重复', async () => {

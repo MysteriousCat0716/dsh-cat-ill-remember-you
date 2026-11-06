@@ -27,6 +27,16 @@ import { backfillTurnCwd } from './backfill.js';
 import { forgetSweep } from './forget.js';
 import { embedPending, warmVector } from './embed.js';
 
+/** 版本号只从 package.json 取：面板、诊断、README 共用一处，别在手写字符串里维护。 */
+const PKG_VERSION = (() => {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
+
 export const name = 'dsh-cat-ill-remember-you';
 
 export const inject = ['sessions'];
@@ -388,7 +398,7 @@ export function apply(ctx) {
   };
 
   const panelState = () => ({
-    version: '0.8.41',
+    version: PKG_VERSION,
     layers: {
       stack: envOn('DSH_MEMORY_CORE_STACK', true),
       persona: envOn('DSH_MEMORY_CORE_PERSONA', false),
