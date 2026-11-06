@@ -1,6 +1,6 @@
 # I'll Remember You
 
-包名 `dsh-cat-ill-remember-you`。
+包名 `dsh-cat-ill-remember-you`，当前版本 0.8.43。
 
 记忆核心的 DSH 插件：把对话原文落进本地 SQLite，空闲时提炼成信息点，每轮开始前把「全局栈 + 常驻偏好 + 取回的记忆」拼进动态上下文。
 
@@ -16,16 +16,28 @@
   - L3 只要句子带指代就回看最近原文；只有指代、抽不出名词时也翻（「你还记得上次那件事吗」）。
   - 向量：`lib/embed.js` 直接调本机 Ollama `/api/embed`（默认 `qwen3-embedding:0.6b`，1024 维），回填在 `embeddings` 表；锚点/实体没补满两条就跑一次，余弦 ≥0.55 补一条，连不上 60 秒冷却。
   - 注入走宿主 `systemPrompt.context` 动态上下文，不塞 `decision.messages`——后者会被宿主 append 成 `user/message`，显示成用户气泡。
-- **M3 影子账本**：白名单内每轮算「如果替换会删掉什么、补上什么」，落 `shadow_v2`；白名单外完全不记账（这些会话不会真替换，记账只会随宿主压缩无限涨）。
+- **M3 影子账本**：黑名单外每轮算「如果替换会删掉什么、补上什么」，落 `shadow_v2`；黑名单里的会话完全不记账（这些会话不会真替换，记账只会随宿主压缩无限涨）。
 - **M4 遗忘**：每日一次，按取回/验证时间降 tier，只标不删，落 `forget_log`。保留期分三档：`permanent` 永不降级（偏好）、`ephemeral` 7 天没碰沉 dormant（情绪）、`auto` 走默认曲线（30/90 天）。
-- **M5 短期栈**：每说一句，把指针（`sid` / `seq` / `t`）压进 `context_stack`。存储上每个会话留最近 40 条 active、全局 400 条兜底——容量是存储问题，本会话再长也不挤掉别的会话。注入时按会话新→旧分配字数预算（900 / 700 / 550 / 450 / 350 / 250），本会话再切 600 字；从每个会话的尾部往回装**整轮**，一轮要么全进要么全不进；最近 2 轮用原文，更早的用出栈摘要；总硬顶 3000 字。注入按时间正序，时间戳用本机时区。所有会话都注入；白名单外的会话另有「只预览、不改历史」的标注。
+- **M5 短期栈**：每说一句，把指针（`sid` / `seq` / `t`）压进 `context_stack`。存储上每个会话留最近 40 条 active、全局 400 条兜底——容量是存储问题，本会话再长也不挤掉别的会话。注入时按会话新→旧分配字数预算（900 / 700 / 550 / 450 / 350 / 250），本会话再切 600 字；从每个会话的尾部往回装**整轮**，一轮要么全进要么全不进；最近 2 轮用原文，更早的用出栈摘要；总硬顶 3000 字。注入按时间正序，时间戳用本机时区。所有会话都注入；黑名单里的会话另有「只预览、不改历史」的标注。
   - 出栈只按**未出栈**的行数计数——表里留着历史指针，用总数算会把 active 全挤掉。
-- **M6 替换**（白名单会话）：
+  - 侧栏「记忆」页签里有栈面板：列出每个会话最新入栈的指针（会话名 + 会话号），滑条调「多少条进入全局注入」（30–50），勾选可删行，删掉的行只不进注入，`turns` 里的原文一个字不动。面板只读写 `~/.dsh/cache/stack-limit.txt` 与 `stack-exclude.txt`，改完立刻生效。
+- **M6 替换**（黑名单之外）：
   - `sid:full`：从第 3 条消息起，每次把「最近 2 条之外的全部旧历史」压成一条替换块，无冷却。
   - `sid`（roll）：每次只动最早 `STEP=4` 条，最近 `KEEP_TAIL=6` 条永远是原文，冷却 60 秒。
   - 替换块头部标 `[上下文替换｜旧消息压缩，非用户发言]`，每条原消息标「用户/助手」；事件载体只能是 `user/message`（宿主禁 `assistant/message` 带 `sourceEventSeqs`，官方 compaction 也这么做）。替换块不进 `surfaceMessages`，下一次替换永远从原文重算。
+  - 预算 3000 字（`DSH_MEMORY_CORE_REPLACE_CHARS`）；按句权重挑选，助手行进块，中段优先理由句，最近 6 条保底。
+  - 工具结果只留一行摘要（80 字）；大结果给取回凭据——`refId` 交给 `ops_result`、spill 路径交给 `read`，小结果直接摘录。
 
 替换的区间按**位置**取（`surface.nodes.indexOf(startSeq)` 到 `indexOf(endSeq)`），不能按 seq 值过滤：早先替换块的 seq 比它所在的位置大，会夹在后续区间中间；值过滤会漏掉它，宿主按位置算 `shadowedSeqs`，直接报 `missing`。同一区间只记一次账，但上次 `applied=0`（append 失败）时允许下一轮重试。
+
+## 替换的开关
+
+真替换的开关不是环境变量，是两个文件：
+
+- `~/.dsh/cache/replace-blacklist.txt`，每行一个 session id；命中即 off。
+- `~/.dsh/cache/replace-mode.txt`，值为 `on` 时，黑名单之外的会话按 full 替换。
+
+**黑名单之外 = 会替换**（旧称「白名单」；旧文件 `replace-sessions.txt` 已删，备份在 `_backups/replace-sessions-20261105.txt`）。两个文件都按 `mtime + size` 缓存，改完立刻生效，不用重启。`tools/replay-extract.mjs` 是提炼决策的回放（`--rules r0|r1`），只读库、不写库。
 
 ## 数据
 
@@ -33,7 +45,7 @@
 
 ## 装进 profile
 
-依赖与 `dsh.profile.bundles` 里加 `dsh-cat-ill-remember-you`（link 到本目录），`pnpm install`，重启 dsh。
+依赖与 `dsh.profile.bundles` 里加 `dsh-cat-ill-remember-you`（link 到本目录），`pnpm install`，重启 dsh。侧栏出现「记忆」页签；面板里的「只推演」按钮会生成一份「若现在开替换，这一轮模型会收到的完整上下文」，不写历史、不记账。
 
 ## 跑测试
 
@@ -41,7 +53,7 @@
 for f in test/*.test.js; do node "$f"; done
 ```
 
-164 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。`node --test test/` 在部分 Windows 沙箱里会给每个文件起子进程、报 `spawn EPERM`，所以逐文件跑。
+211 条；单元测试用内存库，pre-step 集成测试用临时文件库（跑完删除），都不碰真实数据。`node --test test/` 在部分 Windows 沙箱里会给每个文件起子进程、报 `spawn EPERM`，所以逐文件跑。
 
 ## 环境变量
 
@@ -54,19 +66,21 @@ for f in test/*.test.js; do node "$f"; done
 | `DSH_MEMORY_CORE_OLLAMA` | `http://127.0.0.1:11434` | Ollama 地址 |
 | `DSH_MEMORY_CORE_EMBED_BATCH` | `16` | 每批补多少条向量 |
 | `DSH_MEMORY_CORE_VECTOR` | `on` | 设 `off` 关掉向量召回（测试用） |
+| `DSH_MEMORY_CORE_STACK` | `on` | 短期栈（A1 接续层）开关 |
+| `DSH_MEMORY_CORE_PEOPLE` | `on` | 人物层（A3）开关 |
+| `DSH_MEMORY_CORE_ENRICH` | `on` | 后台整理（提炼 / 向量 / 遗忘）开关 |
 | `DSH_MEMORY_CORE_PERSONA` | `off` | 设 `on` 才注入常驻层（避免和仍在跑的 mnemon 双份） |
 | `DSH_MEMORY_CORE_PERSONA_USER` | `4096` | 常驻层 user 区字数上限 |
 | `DSH_MEMORY_CORE_PERSONA_MEMORY` | `8192` | 常驻层 memory 区字数上限 |
+| `DSH_MEMORY_CORE_REPLACE_CHARS` | `3000` | 替换块字数上限 |
 | `DSH_MEMORY_CORE_KEEP` | `10` | 旧模式保留多少条原文（roll 模式按 `KEEP_TAIL` 固定 6） |
 | `DSH_MEMORY_CORE_SHADOW_WINDOW` | `40` | 旧模式每次被换窗口最多取多少条 |
 | `DSH_MEMORY_CORE_ROLL` | `1` | roll 模式；`0` 退回按比例一次换一段 |
-
-真替换的开关不是环境变量，是白名单文件 `~/.dsh/cache/replace-sessions.txt`：每行一个 session id，`sid:full` 表示完全替换，`*` 表示全部；文件不存在或名单为空 = 全关。白名单按 `mtime + size` 缓存，改完立刻生效，不用重启。`tools/replay-extract.mjs` 是提炼决策的回放（`--rules r0|r1`），只读库、不写库。
 
 ## 已知缺口
 
 - 替换块在 UI 上仍占「用户消息」的位置——宿主事件类型层只允许 `user/message` 带 `sourceEventSeqs`，改不了；内容层已标「非用户发言」。
 - 替换块摘要仍是规则压缩（关键词 + 截断），结论容易被砍；提炼质量一般，接模型只改 `refine()` 内部。
-- 真替换只对白名单会话生效，其余只预览；几千字的大窗口路径还没实跑。
-- 工具原文还没做到按需取回——完全替换想连 `tool/result` 一起压，得先有这条路（见 `调研-工具原文取回-2026-11-03.md`）。
-- `persona` 已导入 mnemon 的 39 条常驻，但默认不注入；提炼层还没做「从对话里长出偏好/判断」。
+- 真替换只对黑名单之外的会话生效；几千字的大窗口路径还没实跑。
+- 工具原文取回：小结果摘录已在 a7d24d 的替换块里验证；大结果的 `refId` 取回路径还没实撞上。
+- `persona` 表已导入 mnemon 的常驻条目，但默认不注入；提炼层还没做「从对话里长出偏好/判断」。
